@@ -43,7 +43,7 @@ func settingsPage() ([]byte, error) {
 		"img-src data:",
 		"base-uri 'none'",
 		"form-action 'none'",
-		"frame-ancestors 'none'",
+		"frame-ancestors 'self'",
 	}, "; ")
 
 	return okEnvelope(managementResponse{
@@ -54,7 +54,7 @@ func settingsPage() ([]byte, error) {
 			"Content-Security-Policy":    []string{csp},
 			"Referrer-Policy":            []string{"no-referrer"},
 			"X-Content-Type-Options":     []string{"nosniff"},
-			"X-Frame-Options":            []string{"DENY"},
+			"X-Frame-Options":            []string{"SAMEORIGIN"},
 			"Permissions-Policy":         []string{"camera=(), geolocation=(), microphone=(), payment=(), usb=()"},
 			"Cross-Origin-Opener-Policy": []string{"same-origin"},
 		},

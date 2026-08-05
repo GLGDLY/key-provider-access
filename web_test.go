@@ -49,10 +49,10 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 	if !strings.Contains(body, `nonce="`+match[1]+`"`) {
 		t.Fatal("CSP nonce does not match embedded assets")
 	}
-	if !strings.Contains(csp, "form-action 'none'") || !strings.Contains(csp, "frame-ancestors 'none'") {
-		t.Fatalf("CSP is not fail-closed: %q", csp)
+	if !strings.Contains(csp, "form-action 'none'") || !strings.Contains(csp, "frame-ancestors 'self'") {
+		t.Fatalf("CSP does not allow only same-origin embedding: %q", csp)
 	}
-	if response.Headers.Get("Cache-Control") != "no-store" || response.Headers.Get("X-Frame-Options") != "DENY" {
+	if response.Headers.Get("Cache-Control") != "no-store" || response.Headers.Get("X-Frame-Options") != "SAMEORIGIN" {
 		t.Fatalf("security headers = %#v", response.Headers)
 	}
 }

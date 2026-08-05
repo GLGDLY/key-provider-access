@@ -168,7 +168,7 @@ http://<CPA_HOST>:<CPA_PORT>/v0/resource/plugins/key-model-access/settings
 安全边界：
 
 - Management Key 只保存在当前页面 JavaScript 内存中，不写入 Local Storage、Session Storage、URL 或 DOM；成功连接后输入框立即清空。
-- 页面使用每次请求随机 nonce 的 CSP、`frame-ancestors 'none'`、`form-action 'none'`、`no-store` 和防嵌入响应头。
+- 页面使用每次请求随机 nonce 的 CSP、`frame-ancestors 'self'`、`X-Frame-Options: SAMEORIGIN`、`form-action 'none'` 和 `no-store`；仅允许同源 CPA 管理界面嵌入。
 - 页面刷新或断开连接后必须重新输入 Management Key。
 - 未配置 `policy_file` 时可以编辑，但保存仅作用于内存；界面会持续显示警告并禁用文件重载。
 
