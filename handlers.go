@@ -18,52 +18,6 @@ const (
 	settingsResourcePath = "/v0/resource/plugins/key-model-access/settings"
 )
 
-func authenticate(raw []byte) ([]byte, error) {
-	var req frontendAuthRequest
-	if err := decodeJSON(raw, &req); err != nil {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	_, snapshot, _, _, hostSchema, _ := globalState.current()
-	if hostSchema > 0 && hostSchema < schemaVersion {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	key, source := extractAPIKey(req.Headers, req.Query, snapshot.AllowQueryKeys)
-	if key == "" {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	policy, exists := snapshot.ByHash[hashKey(key)]
-	if !exists {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-
-	if isModelsListPath(req.Path) && snapshot.ModelsEndpoint == "deny" {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	// CPA's Live sideband handshake carries only a call ID; the plugin API does
-	// not expose the model bound to that server-side session. Restricted keys
-	// therefore fail closed, while genuinely unrestricted keys may connect.
-	if isLiveSidebandPath(req.Path) && !policyAllowsAllModels(snapshot, policy) {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	// Enforce as early as possible. The request interceptor repeats this check with
-	// CPA's authoritative RequestedModel to cover protocols not parsed here.
-	model := extractModel(req.Path, req.Headers, req.Body)
-	if model != "" && !policyAllows(snapshot, policy, model) {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	if model == "" && isDirectModelRoute(req.Path) && !policyAllowsAllModels(snapshot, policy) {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	return okEnvelope(frontendAuthResponse{
-		Authenticated: true,
-		Principal:     principalForHash(policy.KeySHA256),
-		Metadata: map[string]string{
-			"key_id": policy.ID,
-			"source": source,
-		},
-	})
-}
-
 func interceptRequest(raw []byte) ([]byte, error) {
 	var req requestInterceptRequest
 	if err := decodeJSON(raw, &req); err != nil {
@@ -73,47 +27,50 @@ func interceptRequest(raw []byte) ([]byte, error) {
 	if model == "" {
 		model = strings.TrimSpace(req.Model)
 	}
-	if model == "" {
-		return okEnvelope(requestInterceptResponse{})
-	}
 
 	_, snapshot, _, _, _, _ := globalState.current()
-	policy, found := policyFromInterceptRequest(snapshot, req)
-	if !found {
-		return terminatedPolicyResponse(http.StatusForbidden, "model access identity is unavailable", model, "")
+	if snapshot.BlockAll {
+		return terminatedPolicyResponse(http.StatusForbidden, "model access policy is unavailable", model)
 	}
-	if !policyAllows(snapshot, policy, model) {
-		return terminatedPolicyResponse(http.StatusForbidden, "model is not allowed for this API key", model, policy.ID)
+
+	scope, hasScope := callerScopeFromMetadata(req.Metadata)
+	if len(snapshot.ByCallerScope) > 0 && !hasScope {
+		return terminatedPolicyResponse(http.StatusForbidden, "model access identity is unavailable", model)
+	}
+	if !hasScope {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	policy, configured := snapshot.ByCallerScope[scope]
+	if !configured {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	if model == "" {
+		return terminatedPolicyResponse(http.StatusForbidden, "requested model is unavailable for policy evaluation", "")
+	}
+	if !policyAllows(policy, model) {
+		return terminatedPolicyResponse(http.StatusForbidden, "model is not allowed for this API key", model)
 	}
 	return okEnvelope(requestInterceptResponse{})
 }
 
-func policyFromInterceptRequest(snapshot policySnapshot, req requestInterceptRequest) (runtimePolicy, bool) {
-	if scope, ok := req.Metadata["caller_scope"].(string); ok {
-		if policy, exists := snapshot.ByCallerScope[strings.TrimSpace(scope)]; exists {
-			return policy, true
-		}
+func callerScopeFromMetadata(metadata map[string]any) (string, bool) {
+	raw, ok := metadata["caller_scope"].(string)
+	if !ok {
+		return "", false
 	}
-	key, _ := extractAPIKey(req.Headers, nil, false)
-	if key == "" {
-		return runtimePolicy{}, false
-	}
-	policy, exists := snapshot.ByHash[hashKey(key)]
-	return policy, exists
+	scope := strings.ToLower(strings.TrimSpace(raw))
+	return scope, validSHA256(scope)
 }
 
-func terminatedPolicyResponse(status int, message, model, keyID string) ([]byte, error) {
-	errorObject := map[string]any{
-		"error": map[string]any{
-			"type":    "model_access_denied",
-			"message": message,
-			"model":   model,
-		},
+func terminatedPolicyResponse(status int, message, model string) ([]byte, error) {
+	details := map[string]any{
+		"type":    "model_access_denied",
+		"message": message,
 	}
-	if keyID != "" {
-		errorObject["error"].(map[string]any)["key_id"] = keyID
+	if model != "" {
+		details["model"] = model
 	}
-	body, err := json.Marshal(errorObject)
+	body, err := json.Marshal(map[string]any{"error": details})
 	if err != nil {
 		return nil, err
 	}
@@ -128,9 +85,9 @@ func terminatedPolicyResponse(status int, message, model, keyID string) ([]byte,
 func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodGet, Path: statusPath, Description: "Show key-model-access status without exposing API keys."},
-			{Method: http.MethodGet, Path: policiesPath, Description: "List sanitized per-key model policies."},
-			{Method: http.MethodPut, Path: policiesPath, Description: "Replace all per-key model policies."},
+			{Method: http.MethodGet, Path: statusPath, Description: "Show key-model-access status without exposing API keys or caller scopes."},
+			{Method: http.MethodGet, Path: policiesPath, Description: "List caller-scope model policies."},
+			{Method: http.MethodPut, Path: policiesPath, Description: "Replace all caller-scope model policies."},
 			{Method: http.MethodPost, Path: reloadPath, Description: "Reload policies from policy_file."},
 		},
 		Resources: []resourceRoute{{
@@ -167,32 +124,29 @@ func handleManagement(raw []byte) ([]byte, error) {
 func managementStatus() ([]byte, error) {
 	cfg, snapshot, source, updatedAt, hostSchema, lastError, revision := globalState.currentWithRevision()
 	return managementJSON(http.StatusOK, map[string]any{
-		"plugin":              pluginID,
-		"version":             pluginVersion,
-		"schema_version":      schemaVersion,
-		"host_schema_version": hostSchema,
-		"last_error":          lastError,
-		"policy_count":        len(snapshot.ByHash),
-		"revision":            revision,
-		"default_action":      snapshot.DefaultAction,
-		"models_endpoint":     snapshot.ModelsEndpoint,
-		"allow_query_keys":    snapshot.AllowQueryKeys,
-		"policy_file":         cfg.PolicyFile,
-		"persistent_updates":  cfg.PolicyFile != "",
-		"source":              source,
-		"updated_at":          formattedTime(updatedAt),
-		"models_list_note":    "/v1/models is global in CPA; plugins can allow or deny it but cannot filter it per API key.",
+		"plugin":                  pluginID,
+		"version":                 pluginVersion,
+		"schema_version":          schemaVersion,
+		"host_schema_version":     hostSchema,
+		"auth_mode":               "cpa_builtin_api_keys",
+		"identity_source":         "Metadata.caller_scope",
+		"unconfigured_key_action": "allow",
+		"last_error":              lastError,
+		"policy_count":            len(snapshot.ByCallerScope),
+		"revision":                revision,
+		"policy_file":             cfg.PolicyFile,
+		"persistent_updates":      cfg.PolicyFile != "",
+		"source":                  source,
+		"updated_at":              formattedTime(updatedAt),
+		"fail_closed":             snapshot.BlockAll,
 	})
 }
 
 func managementPolicies() ([]byte, error) {
 	cfg, snapshot, source, updatedAt, _, _, revision := globalState.currentWithRevision()
-	document := documentFromConfig(cfg)
-	document.DefaultAction = snapshot.DefaultAction
-	document.ModelsEndpoint = snapshot.ModelsEndpoint
-	document.AllowQueryKeys = boolPointer(snapshot.AllowQueryKeys)
-	for index := range document.Keys {
-		document.Keys[index].Key = ""
+	document := policyDocument{Version: int(schemaVersion), Policies: []policyConfig{}}
+	if !snapshot.BlockAll {
+		document = documentFromConfig(cfg)
 	}
 	return managementJSONWithHeaders(http.StatusOK, map[string]any{
 		"policy":     document,
@@ -243,10 +197,8 @@ func managementReplacePolicies(body []byte, ifMatch string) ([]byte, error) {
 			return managementJSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		}
 	}
-	cfg.DefaultAction = sanitized.DefaultAction
-	cfg.ModelsEndpoint = sanitized.ModelsEndpoint
-	cfg.AllowQueryKeys = sanitized.AllowQueryKeys
-	cfg.Keys = sanitized.Keys
+	cfg.Version = sanitized.Version
+	cfg.Policies = clonePolicyConfigs(sanitized.Policies)
 	source := "Management API (memory only)"
 	if cfg.PolicyFile != "" {
 		source = cfg.PolicyFile
@@ -255,7 +207,7 @@ func managementReplacePolicies(body []byte, ifMatch string) ([]byte, error) {
 	revision := globalState.policyRevision()
 	return managementJSONWithHeaders(http.StatusOK, map[string]any{
 		"ok":           true,
-		"policy_count": len(snapshot.ByHash),
+		"policy_count": len(snapshot.ByCallerScope),
 		"persistent":   cfg.PolicyFile != "",
 		"revision":     revision,
 		"policy":       sanitized,
@@ -272,19 +224,19 @@ func managementReload() ([]byte, error) {
 	}
 	document, err := readPolicyFile(cfg.PolicyFile)
 	if err != nil {
+		globalState.recordPolicyError(err)
 		return managementJSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
 	snapshot, sanitized, err := compileDocument(document)
 	if err != nil {
+		globalState.recordPolicyError(err)
 		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": err.Error()})
 	}
-	cfg.DefaultAction = sanitized.DefaultAction
-	cfg.ModelsEndpoint = sanitized.ModelsEndpoint
-	cfg.AllowQueryKeys = sanitized.AllowQueryKeys
-	cfg.Keys = sanitized.Keys
+	cfg.Version = sanitized.Version
+	cfg.Policies = clonePolicyConfigs(sanitized.Policies)
 	globalState.replace(cfg, snapshot, cfg.PolicyFile)
 	return managementJSON(http.StatusOK, map[string]any{
-		"ok": true, "policy_count": len(snapshot.ByHash), "revision": globalState.policyRevision(),
+		"ok": true, "policy_count": len(snapshot.ByCallerScope), "revision": globalState.policyRevision(),
 	})
 }
 

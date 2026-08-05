@@ -35,9 +35,37 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 			t.Fatalf("settings page retains template marker %s", marker)
 		}
 	}
-	for _, expected := range []string{"id=\"authGate\"", "id=\"policyNav\"", "const PATHS", ":root"} {
+	for _, expected := range []string{
+		"id=\"authGate\"",
+		"id=\"policyNav\"",
+		"const PATHS",
+		"/v0/management/api-keys",
+		"cli-proxy-api:caller-scope:v1\\0",
+		":root",
+	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("settings page missing %q", expected)
+		}
+	}
+	for _, forbidden := range []string{
+		"addKeyButton",
+		"credential",
+		"delete-key",
+		"default_action",
+		"models_endpoint",
+		"allow_query_keys",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("settings page contains removed key-management UI or logic %q", forbidden)
+		}
+	}
+	if strings.Count(body, "api(PATHS.apiKeys") != 1 || !strings.Contains(body, `api(PATHS.apiKeys, { method: "GET" })`) {
+		t.Fatal("settings page must access CPA API keys through one read-only GET call")
+	}
+	for _, writeMethod := range []string{`method: "PUT"`, `method: "PATCH"`, `method: "DELETE"`} {
+		apiKeyWrite := regexp.MustCompile(`(?s)api\(PATHS\.apiKeys.{0,160}` + regexp.QuoteMeta(writeMethod))
+		if apiKeyWrite.MatchString(body) {
+			t.Fatalf("settings page writes to CPA API keys with %s", writeMethod)
 		}
 	}
 
@@ -70,11 +98,10 @@ func TestHandleManagementServesSettingsResource(t *testing.T) {
 	}
 }
 
-func TestManagementPoliciesNeverExposePlainKeys(t *testing.T) {
+func TestManagementPoliciesReturnsSafeV2DocumentWhenFailClosed(t *testing.T) {
 	globalState.clear()
 	t.Cleanup(globalState.clear)
-	cfg := pluginConfig{DefaultAction: "deny", ModelsEndpoint: "deny", Keys: []keyConfig{{ID: "unsafe", Key: "must-not-leak"}}}
-	globalState.failClosedOrPreserve(cfg, schemaVersion, errTestPolicy)
+	globalState.failClosedOrPreserve(pluginConfig{Version: 1}, schemaVersion, errTestPolicy)
 
 	raw, err := managementPolicies()
 	if err != nil {
@@ -82,15 +109,18 @@ func TestManagementPoliciesNeverExposePlainKeys(t *testing.T) {
 	}
 	var response managementResponse
 	unwrapEnvelope(t, raw, &response)
-	if strings.Contains(string(response.Body), "must-not-leak") {
-		t.Fatalf("plain key leaked: %s", response.Body)
+	if string(response.Body) == "" || strings.Contains(string(response.Body), `"version":1`) {
+		t.Fatalf("unsafe fail-closed policy response: %s", response.Body)
+	}
+	if !strings.Contains(string(response.Body), `"version":2`) || !strings.Contains(string(response.Body), `"policies":[]`) {
+		t.Fatalf("unexpected fail-closed policy response: %s", response.Body)
 	}
 }
 
 func TestPolicyRevisionRejectsStaleWrites(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 1, Keys: []keyConfig{{ID: "first", Key: "first-secret", AllowModels: []string{"*"}}}})
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: scopeA, AllowModels: []string{"*"}}}})
 	initialRevision := globalState.policyRevision()
-	body := []byte(`{"version":1,"default_action":"deny","keys":[{"id":"second","key":"second-secret","allow_models":["gpt-*"]}]}`)
+	body := []byte(`{"version":2,"policies":[{"caller_scope":"` + scopeB + `","allow_models":["gpt-*"],"deny_models":[]}]}`)
 
 	raw, err := managementReplacePolicies(body, etagForRevision(initialRevision))
 	if err != nil {

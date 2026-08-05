@@ -48,8 +48,9 @@
       </div>
       <div class="topbar-actions">
         <div id="healthBadge" class="health-badge"><span class="status-dot"></span><span>正在连接</span></div>
+        <button id="refreshDataButton" class="icon-button" type="button" aria-label="刷新 CPA Key 与策略" title="刷新 CPA Key 与策略"></button>
         <button id="reloadButton" class="button secondary compact" type="button" aria-label="从策略文件重载" title="从策略文件重载"></button>
-        <button id="saveButton" class="button primary compact" type="button" aria-label="保存修改" title="保存修改" disabled></button>
+        <button id="saveButton" class="button primary compact" type="button" aria-label="保存模型规则" title="保存模型规则" disabled></button>
         <div class="separator" aria-hidden="true"></div>
         <button id="themeButton" class="icon-button" type="button" aria-label="切换主题" title="切换主题"></button>
         <button id="disconnectButton" class="icon-button" type="button" aria-label="断开连接" title="断开连接"></button>
@@ -60,10 +61,10 @@
       <aside class="sidebar" aria-label="策略导航">
         <div class="sidebar-head">
           <div>
-            <p class="section-label">访问策略</p>
-            <p id="policyCount" class="sidebar-count">0 个 Key</p>
+            <p class="section-label">CPA API KEYS</p>
+            <p id="policyCount" class="sidebar-count">0 个当前 Key</p>
           </div>
-          <button id="addKeyButton" class="icon-button add" type="button" aria-label="添加 API Key" title="添加 API Key"></button>
+          <span class="readonly-badge">只读来源</span>
         </div>
         <div class="search-field">
           <span id="searchIcon" aria-hidden="true"></span>

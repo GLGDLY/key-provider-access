@@ -1,33 +1,21 @@
-version: 1
+version: 2
 
-# When no allow_models or deny_models pattern matches:
-# - deny: only explicitly allowed models are usable
-# - allow: all models except explicitly denied models are usable
-default_action: deny
-
-# CPA currently exposes one global /v1/models list. A plugin can only allow or
-# deny that endpoint; it cannot return a different filtered list for each key.
-models_endpoint: allow
-
-# Also accept ?key= and ?auth_token=. Header credentials remain supported.
-allow_query_keys: true
-
-keys:
-  - id: team-a
-    enabled: true
-    # SHA-256 of the raw API key. Generate with:
-    # printf %s "$KEY" | shasum -a 256
-    key_sha256: "b6bff5f6f51e37562ec530ac75883bd4f24f37b0f6c04199c2c54e2b649aafae"
+# caller_scope is a 64-character hexadecimal identity derived by CPA for an
+# existing top-level api-keys entry. This value is syntactically valid, but is
+# only an example. Use the Web UI to generate scopes for your current CPA keys;
+# do not reuse an old v1 key_sha256 or place a raw key in this file.
+policies:
+  - caller_scope: "f7291f3315e5ab0d3c02015a081879d748693f231d8370b43f38f57be991734a"
+    # deny_models always wins. A non-empty allow_models is a whitelist.
     allow_models:
       - "gpt-5*"
       - "claude-sonnet-*"
     deny_models:
       - "*-preview"
 
-  - id: gemini-service
-    enabled: true
-    # A plain key is accepted on input, then removed when the Management API
-    # persists this document. Prefer key_sha256 for files you edit manually.
-    key: "replace-with-a-real-api-key"
-    allow_models:
-      - "gemini-2.5-pro"
+  - caller_scope: "7cb03289303ff43e7ec5853fd1020a9bd0395cc40d9fe5134e33fe2534b30358"
+    # With an empty allow_models list, all models not matched by deny_models
+    # are allowed. A CPA key with no policy at all is also allowed by default.
+    allow_models: []
+    deny_models:
+      - "private-*"

@@ -1,41 +1,31 @@
 # CPA Key Model Access 插件
 
-一个 CLIProxyAPI（CPA）原生动态库插件，用于为**每个下游 API Key**配置可调用的模型。
+CLIProxyAPI（CPA）原生动态库插件。CPA 继续使用顶层 `api-keys` 完成下游认证；本插件只在 RequestInterceptor 中读取 CPA 提供的 `Metadata.caller_scope`，为**已经存在的 CPA API Key**执行模型 allow/deny。
 
-## 功能
+> `0.1.0` 是相对当前已发布最新版 `0.0.2` 的 breaking pre-1 minor。v1 策略不兼容，升级前必须完成下文的迁移步骤。
 
-- 独占前端认证：未知或已禁用的 Key 无法绕过插件回退到 CPA 内置 `api-keys`。
-- 每个 Key 支持 `allow_models`、`deny_models`，支持 `*` 和 `?` 通配符。
-- `deny_models` 优先于 `allow_models`；都未匹配时使用全局 `default_action`。
-- 支持以下 Key 来源：
-  - `Authorization: Bearer <key>`
-  - `X-Api-Key: <key>`
-  - `X-Goog-Api-Key: <key>`
-  - `?key=`、`?auth_token=`（可关闭）
-- 同时在前端认证和 CPA 的请求执行拦截阶段校验模型，未授权请求不会到达上游。
-- 特别覆盖不进入通用请求拦截链的 Codex Live 路由：顶层/`session.model`、multipart `session` 与默认 `gpt-live-1-codex`。
-- 提供浏览器 Web 设置界面，以及受 CPA Management Key 保护的查询、整体替换、重载 API。
-- Web UI 支持明暗主题、移动端布局、Key CRUD、模型标签、撤销删除和并发修改保护。
-- 策略持久化时只保存 API Key 的 SHA-256，不保存明文。
-- 所有配置写事务串行化；无效热更新保留最后一个有效快照，首次无效配置则以 deny-all 注册，避免回退到内置认证。
+## 工作边界
 
-## 重要限制：`/v1/models`
+- API Key 的创建、删除、保存和认证完全由 CPA 内置 provider 负责。
+- 插件不创建、删除或保存原始 Key，也不提供 Key 管理或认证 provider；Web UI 只读获取现有 CPA Key 以关联 scope。
+- CPA 认证成功后把稳定的 `caller_scope` 放入 RequestInterceptor Metadata；插件只用该 scope 查找模型策略。
+- 没有关联策略的现有 Key 默认允许全部模型。
+- 已有关联策略时：`deny_models` 优先；`allow_models` 非空时作为白名单；`allow_models` 为空时允许所有未被 deny 的模型。
+- `*` 匹配任意长度字符（包括 `/`），`?` 匹配一个字符；匹配区分大小写。
+- 模型名优先取 CPA 的 `RequestedModel`，为空时取 `Model`。
 
-CPA 当前插件 API **不能修改内置 `/v1/models` handler 的响应**。因此本插件不能让 Key A 和 Key B 在标准 `/v1/models` 中看到不同列表，只能通过 `models_endpoint: allow|deny` 对该端点整体允许或拒绝。
-
-即使 `models_endpoint: allow` 返回全局模型列表，实际模型请求仍会严格执行每 Key 权限。若客户端必须看到过滤后的标准模型列表，需要在 CPA 前增加反向代理，或修改 CPA 核心以增加 models-list filter hook。
+本插件不是认证层。未知或无效 Key 是否可用，由 CPA 顶层 `api-keys` 决定；不要把 Key 只写在插件配置中。
 
 ## 兼容性
 
 - CLIProxyAPI **v7.2.103 或更新版本**。
-- 插件 RPC schema 2（用于拦截器主动返回 `403`）。旧 schema 宿主上插件会以独占 deny-all 模式注册并在状态 API 中报告错误，不会降级为不安全的部分执行。
-- 支持 CPA 动态插件的 CGO 构建。可通过任一 Management API 响应头 `X-CPA-SUPPORT-PLUGIN: 1` 确认二进制支持插件。
+- CPA 插件 RPC schema 2，用于 RequestInterceptor 主动返回结构化 `403`。
+- 支持 CPA 动态插件的 CGO 构建；需要 Go 1.24、C 编译器和 `CGO_ENABLED=1`。
+- 可通过任一 Management API 响应头 `X-CPA-SUPPORT-PLUGIN: 1` 确认 CPA 二进制支持插件。
 
-> 本插件声明 `frontend_auth_provider_exclusive: true`。启用后，它会成为唯一的下游认证来源，CPA 顶层 `api-keys` 不再参与认证。请先在插件策略中配置至少一个可用 Key，避免锁死 API。
+## 安装
 
-## 构建
-
-需要 Go、C 编译器和 `CGO_ENABLED=1`：
+### 1. 构建或安装动态库
 
 ```bash
 make test
@@ -43,12 +33,12 @@ make build
 make package
 ```
 
-以 macOS arm64 和默认版本为例，会生成：
+macOS arm64 使用默认版本时会生成：
 
 ```text
 dist/key-model-access.dylib
-dist/key-model-access_0.2.0_darwin_arm64.zip
-dist/key-model-access_0.2.0_darwin_arm64.zip.sha256
+dist/key-model-access_0.1.0_darwin_arm64.zip
+dist/key-model-access_0.1.0_darwin_arm64.zip.sha256
 ```
 
 动态库扩展名：
@@ -57,65 +47,35 @@ dist/key-model-access_0.2.0_darwin_arm64.zip.sha256
 - Linux / FreeBSD：`key-model-access.so`
 - Windows：`key-model-access.dll`
 
-可以覆盖目标平台、输出目录和写入插件的运行时版本：
-
-```bash
-make build GOOS=darwin GOARCH=arm64 BUILD_DIR=/path/to/plugins/darwin/arm64
-make package VERSION=0.2.0
-```
-
-Go 的 `c-shared` 产物必须在目标系统上构建；不能仅设置 `GOOS` 进行普通交叉编译。
-
-## GitHub 发布
-
-发布流程与插件商店产物格式由 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 自动完成。Pull Request 和手动运行会执行测试并构建产物；推送 `v*` 标签还会创建对应的 GitHub Release。
-
-每个 Release 包含以下平台的 zip：
-
-- Linux：amd64、arm64
-- macOS：amd64、arm64
-- Windows：amd64、arm64
-- FreeBSD：amd64
-
-产物命名为：
-
-```text
-key-model-access_<version>_<goos>_<goarch>.zip
-checksums.txt
-```
-
-每个 zip 的根目录只包含对应平台的动态库，`checksums.txt` 使用 `sha256sum` 格式。创建发布：
-
-```bash
-git tag -a v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
-```
-
-本地可生成当前平台的压缩包和聚合校验文件：
-
-```bash
-make checksums VERSION=0.2.0
-```
-
-## 安装
-
-自动安装到本机平台目录：
+自动安装到本机 CPA 平台目录：
 
 ```bash
 make install CPA_DIR=/path/to/CLIProxyAPI
 ```
 
-或手动复制到：
+也可手动复制到：
 
 ```text
 <CPA>/plugins/<GOOS>/<GOARCH>/key-model-access.<ext>
 ```
 
-动态库的基础 ID 必须是 `key-model-access`，并与 `plugins.configs.key-model-access` 一致；也可使用 CPA 官方支持的 `key-model-access-v<version>.<ext>` 版本后缀。
+动态库基础 ID 必须是 `key-model-access`，并与 `plugins.configs.key-model-access` 一致；也可使用 CPA 支持的 `key-model-access-v<version>.<ext>` 后缀。`c-shared` 产物应在目标系统上构建，不能只设置 `GOOS` 做普通交叉编译。
 
-将 [`config.example.yaml`](./config.example.yaml) 中的配置合并到 CPA 的 `config.yaml`：
+可覆盖构建参数：
+
+```bash
+make build GOOS=darwin GOARCH=arm64 BUILD_DIR=/path/to/plugins/darwin/arm64
+make package VERSION=0.1.0
+```
+
+### 2. 配置 CPA Key 与空的 v2 策略
+
+将 [`config.example.yaml`](./config.example.yaml) 合并到 CPA `config.yaml`。首次启动建议使用内联空策略，不要引用尚不存在的文件：
 
 ```yaml
+api-keys:
+  - "replace-with-a-real-api-key"
+
 plugins:
   enabled: true
   dir: "plugins"
@@ -123,19 +83,33 @@ plugins:
     key-model-access:
       enabled: true
       priority: 100
-      policy_file: "config/key-model-access-policies.yaml"
-      default_action: deny
-      models_endpoint: allow
-      allow_query_keys: true
-      keys:
-        - id: bootstrap-admin
-          key: "replace-with-a-real-api-key"
-          allow_models: ["*"]
+      version: 2
+      policies: []
 ```
 
-`policy_file` 相对路径以 CPA 的工作目录为准。文件不存在时先使用内联 `keys`；文件创建后，它成为权威策略来源。
+此状态下，CPA 顶层 `api-keys` 仍负责认证，插件对所有已认证 Key 默认允许全部模型。随后应在维护窗口内通过 Web UI 为需要限制的 Key 生成 v2 策略。
 
-Docker 部署还要持久化动态库和策略文件，例如：
+### 3. 可选：启用持久化
+
+不配置 `policy_file` 时，Management API 修改只保存在插件内存中，重载或重启后丢失。**启用 `policy_file` 前必须先创建它**；当前后端在文件不存在时会 fail closed，而不会回退到内联策略。
+
+先创建一个与 [`policies.example.yaml`](./policies.example.yaml) 相同 schema 的 v2 文件。用于首次启动时，推荐从空文档开始：
+
+```bash
+mkdir -p config
+printf 'version: 2\npolicies: []\n' > config/key-model-access-policies.yaml
+chmod 600 config/key-model-access-policies.yaml
+```
+
+确认文件存在后，再在插件配置中加入：
+
+```yaml
+policy_file: "config/key-model-access-policies.yaml"
+```
+
+相对路径以 CPA 工作目录为准。配置了 `policy_file` 后，该文件是权威策略来源；内联 `version` / `policies` 不再生效。
+
+Docker 部署应持久化动态库和整个策略目录：
 
 ```yaml
 volumes:
@@ -143,9 +117,23 @@ volumes:
   - ./config:/CLIProxyAPI/config
 ```
 
-必须挂载整个策略目录，而不是单独 bind mount 策略文件；Management API 通过同目录临时文件 + rename 原子替换，单文件 bind mount 通常不允许该操作。
+不要只 bind mount 单个策略文件。插件使用同目录临时文件、`fsync` 和 `rename` 原子替换，单文件挂载通常会阻止保存。
 
-## Web 设置界面
+## 从 0.0.2 / v1 升级
+
+v1 的 Key 身份和 v2 的 `caller_scope` 架构不同，旧策略不能原地转换。升级前必须：
+
+1. 在受控维护窗口内停止外部流量，并备份 CPA 配置和旧策略。
+2. 确保每个仍需使用的**原始 Key**都保留或迁移到 CPA 顶层 `api-keys`。只有旧 `key_sha256` 而没有原始 Key 时，无法把该凭据恢复到 CPA；应创建替代 Key 并更新客户端。
+3. 从插件配置和旧策略中移除 v1 字段：`keys`、`default_action`、`models_endpoint`、`allow_query_keys`。
+4. 移除指向 v1 文件的 `policy_file`，先改为内联 `version: 2`、`policies: []`。不要让 0.1.0 读取 v1 文件；它会拒绝 v1 并在首次启动时 fail closed。
+5. 安装 0.1.0 并重启 CPA，先验证顶层 Key 仍由 CPA 正常认证。
+6. 打开 Web UI，读取当前 CPA Key，并为需要限制的 Key **重新生成 v2 策略**。
+7. 如需持久化，先创建有效的 v2 文件，再配置 `policy_file`，重新在 UI 中核对并保存。
+
+空 v2 策略会默认允许所有已认证 Key 调用所有被拦截器覆盖的模型。迁移期间应保持外部流量关闭，直到限制策略已重新生成并验证。
+
+## Web UI
 
 插件启用后访问：
 
@@ -153,38 +141,42 @@ volumes:
 http://<CPA_HOST>:<CPA_PORT>/v0/resource/plugins/key-model-access/settings
 ```
 
-页面也会以“模型权限”资源注册到支持插件菜单的 CPA 管理界面。静态页面本身不需要认证且不包含任何策略数据；打开后需要输入 CPA `remote-management.secret-key`，页面再通过同源 Management API 加载和保存策略。
+页面会以“模型权限”注册到支持插件资源菜单的 CPA 管理界面。输入 CPA `remote-management.secret-key` 后，UI 会：
 
-界面提供：
+1. `GET /v0/management/api-keys`，只读获取 CPA 当前顶层 Key；
+2. 在浏览器内按 CPA 的规则计算对应 `caller_scope`；
+3. 读取插件 v2 策略并按 scope 关联；
+4. 只编辑、保存 `allow_models` 和 `deny_models`。
 
-- 全局 `default_action`、`models_endpoint` 和查询参数 Key 开关。
-- 新增、停用、重命名和删除 API Key。
-- 输入明文新 Key；保存后界面只接收并显示 SHA-256 指纹。
-- 以标签方式编辑 `allow_models` / `deny_models` 通配符规则。
-- 从 `policy_file` 重载、内存模式警告、错误状态与策略来源展示。
-- 基于 revision/`If-Match` 的并发保护；其他管理员或配置重载已修改策略时返回 `412`，避免静默覆盖。
-- 自动明暗主题、响应式移动布局、键盘 `⌘/Ctrl + S` 保存和 reduced-motion 支持。
+UI 不创建、修改或删除 CPA Key，也不会向 `/v0/management/api-keys` 发出写请求。Key 生命周期仍应通过 CPA 配置或 CPA 自身管理能力完成。UI 会在策略保存前后核对 CPA Key 集合：保存前发现变化会中止并要求刷新；保存后发现变化会立即警告新 Key 当前默认允许全部。两次请求之间仍无法形成事务，因此 Key 变更和策略保存应由运维流程串行化。不再对应当前 Key 的旧 scope 会标记为失效策略，并在保存时保留，避免静默删除。
 
-安全边界：
+### UI 安全边界
 
-- Management Key 只保存在当前页面 JavaScript 内存中，不写入 Local Storage、Session Storage、URL 或 DOM；成功连接后输入框立即清空。
-- 页面使用每次请求随机 nonce 的 CSP、`frame-ancestors 'self'`、`X-Frame-Options: SAMEORIGIN`、`form-action 'none'` 和 `no-store`；仅允许同源 CPA 管理界面嵌入。
-- 页面刷新或断开连接后必须重新输入 Management Key。
-- 未配置 `policy_file` 时可以编辑，但保存仅作用于内存；界面会持续显示警告并禁用文件重载。
+- `/v0/management/api-keys` 会把原始 Key 返回给已通过 Management 认证的浏览器。UI 仅在 JavaScript 中短暂用于计算 scope，并尽力清空临时数组；不会把原始 Key 写入 DOM、Local Storage、Session Storage、URL 或插件策略。
+- Management Key 只保存在当前页面 JavaScript 内存中；连接成功后输入框立即清空，刷新或断开后必须重新输入。
+- 主题偏好可以写入 Local Storage，但 Key 和 Management Key 不会写入。
+- 页面响应使用随机 nonce CSP、`frame-ancestors 'self'`、`X-Frame-Options: SAMEORIGIN`、`form-action 'none'` 和 `Cache-Control: no-store`。
+- 应使用 HTTPS、限制 Management API 的网络可达范围，并只在可信浏览器和设备中打开 UI。浏览器扩展、同机恶意软件或已取得 Management Key 的主体仍处于信任边界内。
+- 页面壳不包含 Key 或策略数据；所有数据请求都受 CPA Management Key 保护。
 
-## 策略格式
+## 策略 schema v2
+
+v2 文档顶层只有 `version` 和 `policies`。每条策略只有：
+
+- `caller_scope`：CPA 为已有 API Key 派生的 64 位十六进制 scope；应由 Web UI 生成并关联，不是原始 Key，也不是旧版 `key_sha256`。
+- `allow_models`：允许模式数组。
+- `deny_models`：拒绝模式数组。
+
+推荐不要手工猜测或复用旧哈希。使用 UI 获取 CPA 当前 Key 并生成正确 scope。
+
+### YAML
 
 参见 [`policies.example.yaml`](./policies.example.yaml)：
 
 ```yaml
-version: 1
-default_action: deny
-models_endpoint: allow
-allow_query_keys: true
-keys:
-  - id: team-a
-    enabled: true
-    key_sha256: "<64位 SHA-256 hex>"
+version: 2
+policies:
+  - caller_scope: "f7291f3315e5ab0d3c02015a081879d748693f231d8370b43f38f57be991734a"
     allow_models:
       - "gpt-5*"
       - "claude-sonnet-*"
@@ -192,40 +184,47 @@ keys:
       - "*-preview"
 ```
 
-生成 Key 哈希（不要带换行）：
+### JSON
 
-```bash
-printf %s "$KEY" | shasum -a 256
-# Linux 也可使用：printf %s "$KEY" | sha256sum
+Management API 的 PUT 请求体使用同一 schema：
+
+```json
+{
+  "version": 2,
+  "policies": [
+    {
+      "caller_scope": "f7291f3315e5ab0d3c02015a081879d748693f231d8370b43f38f57be991734a",
+      "allow_models": ["gpt-5*", "claude-sonnet-*"],
+      "deny_models": ["*-preview"]
+    }
+  ]
+}
 ```
 
-匹配规则：
+匹配语义：
 
-1. 命中任意 `deny_models`：拒绝。
-2. 否则命中任意 `allow_models`：允许。
-3. 否则使用 `default_action`。
-4. `*` 可跨越 `/`，例如 `openai/*`；`?` 匹配一个字符。
-5. 模型检查以客户端请求的模型名为准，优先使用 CPA 的 `RequestedModel`。
-6. Codex Live 未显式传模型时按 CPA 默认值 `gpt-live-1-codex` 检查。
-7. 不带模型的 `alpha/search` 无法确定实际权限：仅 `allow_models: ["*"]` 且无 deny 规则（或 `default_action: allow` 且无 deny 规则）的真正全模型 Key 可使用，受限 Key fail closed。
-8. Live sideband 路由只携带服务器端 call ID，插件 API 不提供该会话绑定的模型；为避免跨 Key 接管，只有上述真正全模型 Key 可建立 sideband 连接。受限 Key 即使允许某个 Live 模型也会被拒绝 sideband，这是 CPA 当前 hook 的限制。
+1. Key 没有对应策略：允许全部模型。
+2. 命中任意 `deny_models`：拒绝，优先级最高。
+3. `allow_models` 非空：只有命中 allow 且未命中 deny 才允许。
+4. `allow_models` 为空：允许所有未命中 deny 的模型。
+5. allow 和 deny 都为空等同于允许全部；UI 通常不会为这种 Key 写入策略。
 
-配置中可以临时使用 `key: "明文"`。插件只在内存中计算哈希；通过 Management API 保存时会删除明文并持久化 `key_sha256`。但 CPA 主配置本身不会被插件重写，因此生产配置仍建议直接使用 `key_sha256`。
+YAML 和 JSON 都严格拒绝未知字段、重复 `caller_scope` 和非 64 位十六进制 scope。旧的 `key`、`key_sha256`、`id`、`enabled` 等身份字段不会被接受。
 
 ## Management API
 
-以下路由由 CPA 的 Management Key 保护：
+插件路由由 CPA Management Key 保护：
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `GET` | `/v0/management/plugins/key-model-access/status` | 状态和策略来源 |
-| `GET` | `/v0/management/plugins/key-model-access/policies` | 获取脱敏后的完整策略 |
-| `PUT` | `/v0/management/plugins/key-model-access/policies` | 原子替换全部策略 |
-| `POST` | `/v0/management/plugins/key-model-access/reload` | 从 `policy_file` 重新读取 |
+| `GET` | `/v0/management/plugins/key-model-access/status` | 查看版本、策略来源、持久化和 fail-closed 状态；不返回 scope |
+| `GET` | `/v0/management/plugins/key-model-access/policies` | 获取完整 v2 策略和 revision |
+| `PUT` | `/v0/management/plugins/key-model-access/policies` | 用 JSON 原子替换全部策略 |
+| `POST` | `/v0/management/plugins/key-model-access/reload` | 从已配置的 `policy_file` 重载 |
 
-`GET policies` 响应包含 `revision` 和 `ETag: "rev-N"`。Web UI 保存时发送对应的 `If-Match`；自行调用 API 时也建议携带此 Header，以避免覆盖其他管理员的修改。为兼容旧客户端，不带 `If-Match` 的 PUT 仍可使用。
+UI 还会只读调用 CPA 自带的 `GET /v0/management/api-keys`；它不是插件路由，并会向已授权管理客户端返回 CPA Key，请勿记录或转发响应。
 
-查询：
+准备变量并查询状态：
 
 ```bash
 export CPA_URL=http://127.0.0.1:8317
@@ -236,24 +235,29 @@ curl -sS \
   "$CPA_URL/v0/management/plugins/key-model-access/status"
 ```
 
-整体替换策略（请求体为 JSON；可以传 `key`，响应及持久化文件只返回哈希）：
+读取策略并保留响应中的 `ETag: "rev-N"`：
+
+```bash
+curl -i \
+  -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
+  "$CPA_URL/v0/management/plugins/key-model-access/policies"
+```
+
+整体替换策略：
 
 ```bash
 curl -sS -X PUT \
   -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
   -H 'Content-Type: application/json' \
+  -H 'If-Match: "rev-N"' \
   "$CPA_URL/v0/management/plugins/key-model-access/policies" \
   --data-binary @- <<'JSON'
 {
-  "version": 1,
-  "default_action": "deny",
-  "models_endpoint": "allow",
-  "allow_query_keys": true,
-  "keys": [
+  "version": 2,
+  "policies": [
     {
-      "id": "team-a",
-      "key": "replace-with-real-key",
-      "allow_models": ["gpt-5*", "claude-sonnet-*"],
+      "caller_scope": "f7291f3315e5ab0d3c02015a081879d748693f231d8370b43f38f57be991734a",
+      "allow_models": ["gpt-5*"],
       "deny_models": ["*-preview"]
     }
   ]
@@ -261,7 +265,9 @@ curl -sS -X PUT \
 JSON
 ```
 
-若配置了 `policy_file`，`PUT` 使用同目录临时文件、文件与目录 `fsync` 和重命名进行原子持久化，权限为 `0600`；未配置时只更新内存，并在下次插件重载后丢失。YAML 配置采用严格字段校验，拼写错误会在状态 API 的 `last_error` 中显示，而不会静默扩大权限。
+`GET policies` 返回 revision 和 ETag。携带 `If-Match` 可避免覆盖并发修改；revision 不匹配时返回 `412`。为兼容调用方，当前后端仍接受不带 `If-Match` 的 PUT，但不推荐。
+
+配置 `policy_file` 后，PUT 会以 `0600` 权限原子持久化；未配置时只更新内存。reload 在未配置文件时返回 `409`，文件无效时保留最后一个有效策略并报告错误。
 
 ## 验证
 
@@ -273,45 +279,101 @@ curl -sS \
   "$CPA_URL/v0/management/plugins"
 ```
 
-模型授权测试：
+确认状态至少包含：
+
+```json
+{
+  "version": "0.1.0",
+  "schema_version": 2,
+  "auth_mode": "cpa_builtin_api_keys",
+  "identity_source": "Metadata.caller_scope",
+  "unconfigured_key_action": "allow",
+  "fail_closed": false
+}
+```
+
+使用同一个 CPA 顶层 Key 测试允许和拒绝模型：
 
 ```bash
-# 允许的模型
+# 应允许
 curl -i "$CPA_URL/v1/chat/completions" \
-  -H 'Authorization: Bearer your-client-key' \
+  -H 'Authorization: Bearer your-existing-cpa-key' \
   -H 'Content-Type: application/json' \
   -d '{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}'
 
-# 不允许的模型不会到达上游；根据拦截阶段返回 401 或结构化 403。
+# 若策略只 allow gpt-5*，应由插件返回结构化 403，且请求不应到达上游
 curl -i "$CPA_URL/v1/chat/completions" \
-  -H 'Authorization: Bearer your-client-key' \
+  -H 'Authorization: Bearer your-existing-cpa-key' \
   -H 'Content-Type: application/json' \
-  -d '{"model":"not-allowed","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"claude-sonnet","messages":[{"role":"user","content":"hi"}]}'
+
+# 不在 CPA 顶层 api-keys 中的 Key 应由 CPA 认证层拒绝，而不是由插件管理
+curl -i "$CPA_URL/v1/chat/completions" \
+  -H 'Authorization: Bearer unknown-key' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 本地质量检查：
 
 ```bash
-make check   # gofmt + go vet + go test -race
-make build
+gofmt -w types.go
+go test ./...
+go vet ./...
+git diff --check
 ```
+
+## 当前限制
+
+CPA 的 RequestInterceptor 目前没有完整覆盖以下路径或流程：
+
+- `/v1/models`
+- `alpha/search`
+- Codex Live（包括相关实时/sideband 流程）
+
+因此不要依赖本插件对这些功能实施完整的 per-Key 模型隔离。`/v1/models` 可能返回 CPA 全局模型列表。对于确实进入 RequestInterceptor 的请求，已配置策略的 Key 若缺少模型名会 fail closed；未配置策略的 Key 仍按默认规则允许。若上述未覆盖入口必须受限，应在 CPA/上游 provider 配置、反向代理或网络层禁用或限制，直到 CPA 提供完整 hook 覆盖。
+
+此外：
+
+- 本插件只约束进入 RequestInterceptor 且带可识别模型名的请求，不过滤 CPA 的全局模型目录。
+- 有策略存在但 CPA 未提供 `caller_scope` 时，已覆盖请求会 fail closed；完全空策略时，没有 scope 的请求不会由插件拒绝，认证仍由 CPA 负责。
+- 首次加载无效配置、旧 v1 文件或不存在的 `policy_file` 会使插件策略 fail closed；后续无效热更新会保留最后一个有效快照。
+- 策略变化只影响后续请求，不会中断已经在上游执行的请求。
 
 ## 安全说明
 
 - 原生插件与 CPA 同进程运行，只安装可信构建产物。
-- API Key 经过 `strings.TrimSpace` 后计算 SHA-256；生成哈希时也不要带换行。
-- Management API 响应设置 `Cache-Control: no-store`，不会返回明文 Key。
-- `policy_file` 建议放在只有 CPA 进程用户可访问的位置，并纳入备份和容器持久化。
-- 若策略文件损坏或热重载配置无效，插件保留最后一个有效策略；若启动时没有任何有效策略，则独占认证 deny-all。可通过状态 API 的 `last_error` 排查。
-- 禁用或删除某个 Key 后，后续请求立即失效；当前已在上游执行中的请求不会被中断。
+- 原始 API Key 只应存在于 CPA 顶层 `api-keys`；不要放进插件配置、策略文件或 PUT 请求。
+- `caller_scope` 是稳定的伪名标识，仍应视为敏感管理数据；不要公开策略响应和文件。
+- Management API 响应设置 `Cache-Control: no-store`；应限制 Management Key 权限并定期轮换。
+- `policy_file` 建议放在仅 CPA 进程用户可访问的位置，并纳入安全备份。
+- 无策略默认允许全部。新增 CPA Key 后，应及时在 UI 中刷新并配置限制；需要默认拒绝的新 Key 接入流程时，应在外层自动化或网络边界中实现。
+
+## 构建与发布产物
+
+GitHub Actions 工作流 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 负责测试、构建和发布格式。版本 0.1.0 的压缩包命名为：
+
+```text
+key-model-access_0.1.0_<goos>_<goarch>.zip
+checksums.txt
+```
+
+本地生成当前平台压缩包和聚合校验文件：
+
+```bash
+make checksums VERSION=0.1.0
+```
+
+维护者创建 0.1.0 发布标签的示例：
+
+```bash
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
 
 ## 官方资料
 
-实现依据：
-
 - https://help.router-for.me/cn/plugin/development
-- https://help.router-for.me/cn/plugin/frontend-auth-provider
-- https://help.router-for.me/cn/plugin/frontend-auth-exclusive
 - https://help.router-for.me/cn/plugin/request-interceptor
 - https://help.router-for.me/cn/plugin/management-api
 - https://github.com/router-for-me/CLIProxyAPI/tree/main/examples/plugin

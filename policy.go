@@ -4,14 +4,9 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
-	"mime/multipart"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,46 +21,33 @@ import (
 const maxPolicyFileSize = 2 << 20
 
 type pluginConfig struct {
-	Enabled        *bool       `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Priority       int         `json:"priority,omitempty" yaml:"priority,omitempty"`
-	Store          any         `json:"store,omitempty" yaml:"store,omitempty"`
-	PolicyFile     string      `json:"policy_file" yaml:"policy_file"`
-	DefaultAction  string      `json:"default_action" yaml:"default_action"`
-	ModelsEndpoint string      `json:"models_endpoint" yaml:"models_endpoint"`
-	AllowQueryKeys *bool       `json:"allow_query_keys" yaml:"allow_query_keys"`
-	Keys           []keyConfig `json:"keys" yaml:"keys"`
+	Enabled    *bool          `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Priority   int            `json:"priority,omitempty" yaml:"priority,omitempty"`
+	Store      any            `json:"store,omitempty" yaml:"store,omitempty"`
+	PolicyFile string         `json:"policy_file,omitempty" yaml:"policy_file,omitempty"`
+	Version    int            `json:"version,omitempty" yaml:"version,omitempty"`
+	Policies   []policyConfig `json:"policies,omitempty" yaml:"policies,omitempty"`
 }
 
 type policyDocument struct {
-	Version        int         `json:"version" yaml:"version"`
-	DefaultAction  string      `json:"default_action" yaml:"default_action"`
-	ModelsEndpoint string      `json:"models_endpoint" yaml:"models_endpoint"`
-	AllowQueryKeys *bool       `json:"allow_query_keys,omitempty" yaml:"allow_query_keys,omitempty"`
-	Keys           []keyConfig `json:"keys" yaml:"keys"`
+	Version  int            `json:"version" yaml:"version"`
+	Policies []policyConfig `json:"policies" yaml:"policies"`
 }
 
-type keyConfig struct {
-	ID          string   `json:"id" yaml:"id"`
-	Enabled     *bool    `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Key         string   `json:"key,omitempty" yaml:"key,omitempty"`
-	KeySHA256   string   `json:"key_sha256,omitempty" yaml:"key_sha256,omitempty"`
+type policyConfig struct {
+	CallerScope string   `json:"caller_scope" yaml:"caller_scope"`
 	AllowModels []string `json:"allow_models" yaml:"allow_models"`
-	DenyModels  []string `json:"deny_models,omitempty" yaml:"deny_models,omitempty"`
+	DenyModels  []string `json:"deny_models" yaml:"deny_models"`
 }
 
 type runtimePolicy struct {
-	ID          string
-	KeySHA256   string
 	AllowModels []string
 	DenyModels  []string
 }
 
 type policySnapshot struct {
-	DefaultAction  string
-	ModelsEndpoint string
-	AllowQueryKeys bool
-	ByHash         map[string]runtimePolicy
-	ByCallerScope  map[string]runtimePolicy
+	ByCallerScope map[string]runtimePolicy
+	BlockAll      bool
 }
 
 type state struct {
@@ -81,25 +63,19 @@ type state struct {
 }
 
 var (
-	globalState = state{snapshot: emptySnapshot()}
+	globalState = state{snapshot: failClosedSnapshot()}
 	mutationMu  sync.Mutex
 )
 
-func emptySnapshot() policySnapshot {
-	return policySnapshot{
-		DefaultAction:  "deny",
-		ModelsEndpoint: "allow",
-		AllowQueryKeys: true,
-		ByHash:         make(map[string]runtimePolicy),
-		ByCallerScope:  make(map[string]runtimePolicy),
-	}
+func failClosedSnapshot() policySnapshot {
+	return policySnapshot{ByCallerScope: make(map[string]runtimePolicy), BlockAll: true}
 }
 
 func (s *state) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config = pluginConfig{}
-	s.snapshot = emptySnapshot()
+	s.snapshot = failClosedSnapshot()
 	s.source = ""
 	s.updatedAt = time.Time{}
 	s.hostSchema = 0
@@ -144,20 +120,24 @@ func (s *state) setHostSchema(schema uint32) {
 	s.hostSchema = schema
 }
 
+func (s *state) recordPolicyError(cause error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastError = cause.Error()
+}
+
 func (s *state) failClosedOrPreserve(cfg pluginConfig, schema uint32, cause error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hostSchema = schema
 	s.lastError = cause.Error()
-	if schema >= schemaVersion && s.hasValidPolicy {
+	if s.hasValidPolicy {
 		return
 	}
 	s.config = cfg
-	s.snapshot = emptySnapshot()
-	s.snapshot.ModelsEndpoint = "deny"
+	s.snapshot = failClosedSnapshot()
 	s.source = "fail-closed: " + cause.Error()
 	s.updatedAt = time.Now().UTC()
-	s.hasValidPolicy = false
 	s.revision++
 }
 
@@ -169,9 +149,7 @@ func configure(raw []byte) error {
 	if err := decodeJSON(raw, &req); err != nil {
 		return err
 	}
-	cfg := pluginConfig{DefaultAction: "deny", ModelsEndpoint: "allow"}
-	allowQuery := true
-	cfg.AllowQueryKeys = &allowQuery
+	cfg := pluginConfig{Version: int(schemaVersion)}
 	if req.SchemaVersion < schemaVersion {
 		globalState.failClosedOrPreserve(cfg, req.SchemaVersion, fmt.Errorf("%s requires CPA plugin RPC schema 2 or newer (CPA v7.2.103+)", pluginID))
 		return nil
@@ -188,16 +166,12 @@ func configure(raw []byte) error {
 	source := "inline config"
 	if cfg.PolicyFile != "" {
 		loaded, err := readPolicyFile(cfg.PolicyFile)
-		switch {
-		case err == nil:
-			document = loaded
-			source = cfg.PolicyFile
-		case errors.Is(err, os.ErrNotExist):
-			source = "inline config (policy file not found: " + cfg.PolicyFile + ")"
-		default:
+		if err != nil {
 			globalState.failClosedOrPreserve(cfg, req.SchemaVersion, err)
 			return nil
 		}
+		document = loaded
+		source = cfg.PolicyFile
 	}
 
 	snapshot, sanitized, err := compileDocument(document)
@@ -205,29 +179,33 @@ func configure(raw []byte) error {
 		globalState.failClosedOrPreserve(cfg, req.SchemaVersion, err)
 		return nil
 	}
-	cfg.DefaultAction = sanitized.DefaultAction
-	cfg.ModelsEndpoint = sanitized.ModelsEndpoint
-	cfg.AllowQueryKeys = sanitized.AllowQueryKeys
-	cfg.Keys = sanitized.Keys
+	cfg.Version = sanitized.Version
+	cfg.Policies = sanitized.Policies
 	globalState.setHostSchema(req.SchemaVersion)
 	globalState.replace(cfg, snapshot, source)
 	return nil
 }
 
 func documentFromConfig(cfg pluginConfig) policyDocument {
-	return policyDocument{
-		Version:        1,
-		DefaultAction:  cfg.DefaultAction,
-		ModelsEndpoint: cfg.ModelsEndpoint,
-		AllowQueryKeys: cfg.AllowQueryKeys,
-		Keys:           cfg.Keys,
+	return policyDocument{Version: cfg.Version, Policies: clonePolicyConfigs(cfg.Policies)}
+}
+
+func clonePolicyConfigs(policies []policyConfig) []policyConfig {
+	cloned := make([]policyConfig, len(policies))
+	for index, policy := range policies {
+		cloned[index] = policyConfig{
+			CallerScope: policy.CallerScope,
+			AllowModels: append([]string{}, policy.AllowModels...),
+			DenyModels:  append([]string{}, policy.DenyModels...),
+		}
 	}
+	return cloned
 }
 
 func readPolicyFile(path string) (policyDocument, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return policyDocument{}, err
+		return policyDocument{}, fmt.Errorf("open policy file %q: %w", path, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
@@ -258,7 +236,7 @@ func decodeStrictYAML(raw []byte, target any) error {
 		return err
 	}
 	var extra any
-	if err := decoder.Decode(&extra); err == io.EOF {
+	if err := decoder.Decode(&extra); errors.Is(err, io.EOF) {
 		return nil
 	} else if err != nil {
 		return err
@@ -267,94 +245,47 @@ func decodeStrictYAML(raw []byte, target any) error {
 }
 
 func compileDocument(document policyDocument) (policySnapshot, policyDocument, error) {
-	if document.Version == 0 {
-		document.Version = 1
+	if document.Version != int(schemaVersion) {
+		return policySnapshot{}, policyDocument{}, fmt.Errorf("unsupported policy version %d; only version 2 is supported", document.Version)
 	}
-	if document.Version != 1 {
-		return policySnapshot{}, policyDocument{}, fmt.Errorf("unsupported policy version %d", document.Version)
-	}
-	document.DefaultAction = normalizeAction(document.DefaultAction, "deny")
-	if document.DefaultAction != "allow" && document.DefaultAction != "deny" {
-		return policySnapshot{}, policyDocument{}, fmt.Errorf("default_action must be allow or deny")
-	}
-	document.ModelsEndpoint = normalizeAction(document.ModelsEndpoint, "allow")
-	if document.ModelsEndpoint != "allow" && document.ModelsEndpoint != "deny" {
-		return policySnapshot{}, policyDocument{}, fmt.Errorf("models_endpoint must be allow or deny")
-	}
-	allowQuery := true
-	if document.AllowQueryKeys != nil {
-		allowQuery = *document.AllowQueryKeys
-	}
-	document.AllowQueryKeys = boolPointer(allowQuery)
-
-	snapshot := policySnapshot{
-		DefaultAction:  document.DefaultAction,
-		ModelsEndpoint: document.ModelsEndpoint,
-		AllowQueryKeys: allowQuery,
-		ByHash:         make(map[string]runtimePolicy),
-		ByCallerScope:  make(map[string]runtimePolicy),
+	if document.Policies == nil {
+		document.Policies = []policyConfig{}
 	}
 
-	ids := make(map[string]struct{}, len(document.Keys))
-	for index := range document.Keys {
-		item := &document.Keys[index]
-		enabled := item.Enabled == nil || *item.Enabled
-		item.Enabled = boolPointer(enabled)
-		item.ID = strings.TrimSpace(item.ID)
-		item.Key = strings.TrimSpace(item.Key)
-		item.KeySHA256 = strings.ToLower(strings.TrimSpace(item.KeySHA256))
-		if item.Key != "" {
-			calculated := hashKey(item.Key)
-			if item.KeySHA256 != "" && item.KeySHA256 != calculated {
-				return policySnapshot{}, policyDocument{}, fmt.Errorf("keys[%d] key and key_sha256 do not match", index)
-			}
-			item.KeySHA256 = calculated
-			item.Key = ""
+	snapshot := policySnapshot{ByCallerScope: make(map[string]runtimePolicy)}
+	for index := range document.Policies {
+		item := &document.Policies[index]
+		item.CallerScope = strings.ToLower(strings.TrimSpace(item.CallerScope))
+		if !validSHA256(item.CallerScope) {
+			return policySnapshot{}, policyDocument{}, fmt.Errorf("policies[%d].caller_scope must be 64 hexadecimal characters", index)
 		}
-		if !validSHA256(item.KeySHA256) {
-			return policySnapshot{}, policyDocument{}, fmt.Errorf("keys[%d].key_sha256 must be 64 lowercase or uppercase hex characters", index)
+		if _, exists := snapshot.ByCallerScope[item.CallerScope]; exists {
+			return policySnapshot{}, policyDocument{}, fmt.Errorf("duplicate caller_scope at policies[%d]", index)
 		}
-		if item.ID == "" {
-			item.ID = "key-" + item.KeySHA256[:12]
+		var err error
+		item.AllowModels, err = normalizePatterns(item.AllowModels, fmt.Sprintf("policies[%d].allow_models", index))
+		if err != nil {
+			return policySnapshot{}, policyDocument{}, err
 		}
-		if _, exists := ids[item.ID]; exists {
-			return policySnapshot{}, policyDocument{}, fmt.Errorf("duplicate key id %q", item.ID)
+		item.DenyModels, err = normalizePatterns(item.DenyModels, fmt.Sprintf("policies[%d].deny_models", index))
+		if err != nil {
+			return policySnapshot{}, policyDocument{}, err
 		}
-		ids[item.ID] = struct{}{}
-		if _, exists := snapshot.ByHash[item.KeySHA256]; exists {
-			return policySnapshot{}, policyDocument{}, fmt.Errorf("duplicate key_sha256 for id %q", item.ID)
-		}
-		item.AllowModels = normalizePatterns(item.AllowModels)
-		item.DenyModels = normalizePatterns(item.DenyModels)
-		if !enabled {
-			continue
-		}
-		policy := runtimePolicy{
-			ID: item.ID, KeySHA256: item.KeySHA256,
+		snapshot.ByCallerScope[item.CallerScope] = runtimePolicy{
 			AllowModels: append([]string(nil), item.AllowModels...),
 			DenyModels:  append([]string(nil), item.DenyModels...),
 		}
-		snapshot.ByHash[item.KeySHA256] = policy
-		snapshot.ByCallerScope[callerScope(principalForHash(item.KeySHA256))] = policy
 	}
 	return snapshot, document, nil
 }
 
-func normalizeAction(value, fallback string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func normalizePatterns(patterns []string) []string {
+func normalizePatterns(patterns []string, field string) ([]string, error) {
 	seen := make(map[string]struct{}, len(patterns))
 	out := make([]string, 0, len(patterns))
-	for _, pattern := range patterns {
+	for index, pattern := range patterns {
 		pattern = strings.TrimSpace(pattern)
 		if pattern == "" {
-			continue
+			return nil, fmt.Errorf("%s[%d] must not be empty", field, index)
 		}
 		if _, exists := seen[pattern]; exists {
 			continue
@@ -363,12 +294,7 @@ func normalizePatterns(patterns []string) []string {
 		out = append(out, pattern)
 	}
 	sort.Strings(out)
-	return out
-}
-
-func hashKey(key string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
-	return hex.EncodeToString(sum[:])
+	return out, nil
 }
 
 func validSHA256(value string) bool {
@@ -379,41 +305,26 @@ func validSHA256(value string) bool {
 	return err == nil
 }
 
-func principalForHash(keyHash string) string {
-	return pluginID + ":" + keyHash
-}
-
-func callerScope(principal string) string {
-	sum := sha256.Sum256([]byte("cli-proxy-api:caller-scope:v1\x00" + strings.TrimSpace(principal)))
+// callerScope mirrors CPA's built-in API-key identity derivation. It is kept
+// here for fixed-vector tests and operator tooling; raw keys are never accepted
+// by the policy schema or Management API.
+func callerScope(rawKey string) string {
+	sum := sha256.Sum256([]byte("cli-proxy-api:caller-scope:v1\x00" + strings.TrimSpace(rawKey)))
 	return hex.EncodeToString(sum[:])
 }
 
-func boolPointer(value bool) *bool { return &value }
-
-func policyAllows(snapshot policySnapshot, policy runtimePolicy, model string) bool {
+func policyAllows(policy runtimePolicy, model string) bool {
 	model = strings.TrimSpace(model)
 	for _, pattern := range policy.DenyModels {
 		if wildcardMatch(pattern, model) {
 			return false
 		}
 	}
-	for _, pattern := range policy.AllowModels {
-		if wildcardMatch(pattern, model) {
-			return true
-		}
-	}
-	return snapshot.DefaultAction == "allow"
-}
-
-func policyAllowsAllModels(snapshot policySnapshot, policy runtimePolicy) bool {
-	if len(policy.DenyModels) != 0 {
-		return false
-	}
-	if snapshot.DefaultAction == "allow" {
+	if len(policy.AllowModels) == 0 {
 		return true
 	}
 	for _, pattern := range policy.AllowModels {
-		if pattern == "*" {
+		if wildcardMatch(pattern, model) {
 			return true
 		}
 	}
@@ -448,148 +359,6 @@ func wildcardMatch(pattern, value string) bool {
 		p++
 	}
 	return p == len(patternRunes)
-}
-
-func extractAPIKey(headers http.Header, query url.Values, allowQuery bool) (string, string) {
-	for _, value := range headers.Values("Authorization") {
-		parts := strings.Fields(value)
-		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && strings.TrimSpace(parts[1]) != "" {
-			return strings.TrimSpace(parts[1]), "authorization"
-		}
-	}
-	for _, name := range []string{"X-Goog-Api-Key", "X-Api-Key"} {
-		if value := strings.TrimSpace(headers.Get(name)); value != "" {
-			return value, strings.ToLower(name)
-		}
-	}
-	if allowQuery {
-		for _, name := range []string{"key", "auth_token"} {
-			if value := strings.TrimSpace(query.Get(name)); value != "" {
-				return value, "query-" + name
-			}
-		}
-	}
-	return "", ""
-}
-
-func extractModel(path string, headers http.Header, body []byte) string {
-	if isLiveBootstrapPath(path) {
-		if model := liveModelFromJSON(body); model != "" {
-			return model
-		}
-		if model := modelFromLiveMultipart(headers.Get("Content-Type"), body); model != "" {
-			return model
-		}
-		// This is CPA's current default for JSON, SDP, plain text, and multipart
-		// live bootstrap requests that omit session.model.
-		return "gpt-live-1-codex"
-	}
-	if model := topLevelModelFromJSON(body); model != "" {
-		return model
-	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	for index := 0; index+1 < len(parts); index++ {
-		if !strings.EqualFold(parts[index], "models") {
-			continue
-		}
-		model := strings.TrimSpace(strings.SplitN(parts[index+1], ":", 2)[0])
-		if decoded, err := url.PathUnescape(model); err == nil {
-			model = decoded
-		}
-		return model
-	}
-	return ""
-}
-
-func topLevelModelFromJSON(body []byte) string {
-	if len(body) == 0 || !json.Valid(body) {
-		return ""
-	}
-	var payload struct {
-		Model string `json:"model"`
-	}
-	if json.Unmarshal(body, &payload) != nil {
-		return ""
-	}
-	return strings.TrimSpace(payload.Model)
-}
-
-func liveModelFromJSON(body []byte) string {
-	if len(body) == 0 || !json.Valid(body) {
-		return ""
-	}
-	var payload struct {
-		Model   string `json:"model"`
-		Session struct {
-			Model string `json:"model"`
-		} `json:"session"`
-	}
-	if json.Unmarshal(body, &payload) != nil {
-		return ""
-	}
-	if model := strings.TrimSpace(payload.Session.Model); model != "" {
-		return model
-	}
-	return strings.TrimSpace(payload.Model)
-}
-
-func modelFromLiveMultipart(contentType string, body []byte) string {
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil || !strings.EqualFold(mediaType, "multipart/form-data") || strings.TrimSpace(params["boundary"]) == "" {
-		return ""
-	}
-	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
-	model := ""
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			return model
-		}
-		if err != nil {
-			return ""
-		}
-		partBody, err := io.ReadAll(part)
-		_ = part.Close()
-		if err != nil {
-			return ""
-		}
-		if part.FormName() == "session" {
-			// CPA processes all fields and the final session field wins.
-			model = topLevelModelFromJSON(partBody)
-		}
-	}
-}
-
-func normalizedRequestPath(path string) string {
-	return "/" + strings.Trim(strings.TrimSpace(path), "/")
-}
-
-func isLiveBootstrapPath(path string) bool {
-	cleaned := normalizedRequestPath(path)
-	return cleaned == "/v1/live" || cleaned == "/v1/realtime/calls"
-}
-
-func isLiveSidebandPath(path string) bool {
-	cleaned := normalizedRequestPath(path)
-	if cleaned == "/v1/realtime" {
-		return true
-	}
-	for _, prefix := range []string{"/v1/live/", "/v1/realtime/calls/"} {
-		if suffix := strings.TrimPrefix(cleaned, prefix); suffix != cleaned && suffix != "" && !strings.Contains(suffix, "/") {
-			return true
-		}
-	}
-	return false
-}
-
-func isDirectModelRoute(path string) bool {
-	cleaned := normalizedRequestPath(path)
-	return isLiveBootstrapPath(cleaned) || cleaned == "/v1/alpha/search" || cleaned == "/backend-api/codex/alpha/search"
-}
-
-func isModelsListPath(path string) bool {
-	cleaned := normalizedRequestPath(path)
-	return cleaned == "/v1/models" || cleaned == "/v1beta/models" || cleaned == "/models"
 }
 
 func writePolicyFile(path string, document policyDocument) error {

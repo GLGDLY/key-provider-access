@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,304 +10,297 @@ import (
 	"testing"
 )
 
-func TestCompileDocumentHashesPlainKeysAndAppliesDenyPrecedence(t *testing.T) {
-	document := policyDocument{
-		Version:       1,
-		DefaultAction: "deny",
-		Keys: []keyConfig{{
-			ID:          "team-a",
-			Key:         "secret-a",
-			AllowModels: []string{"gpt-*", "provider/*"},
-			DenyModels:  []string{"gpt-danger"},
-		}},
+const (
+	scopeA = "c411112d71a0f4c7059026c25e281d0b46347a2173a1663735d758cd57c37bcb"
+	scopeB = "d12018bebe927aab9ddea942e2b50535d414754a13f3e8ad87e00569eaa1bcf9"
+)
+
+func TestCallerScopeMatchesCPAFixedVector(t *testing.T) {
+	if got := callerScope("  secret-a  "); got != scopeA {
+		t.Fatalf("callerScope() = %q, want CPA vector %q", got, scopeA)
 	}
+}
+
+func TestCompileDocumentV2Semantics(t *testing.T) {
+	document := policyDocument{Version: 2, Policies: []policyConfig{
+		{CallerScope: strings.ToUpper(scopeA), AllowModels: []string{"gpt-*", "gpt-*"}, DenyModels: []string{"gpt-danger"}},
+		{CallerScope: scopeB, DenyModels: []string{"private-*"}},
+	}}
 	snapshot, sanitized, err := compileDocument(document)
 	if err != nil {
 		t.Fatalf("compileDocument() error = %v", err)
 	}
-	if sanitized.Keys[0].Key != "" {
-		t.Fatal("plain key was retained in sanitized policy")
+	if sanitized.Policies[0].CallerScope != scopeA {
+		t.Fatalf("caller_scope was not normalized: %q", sanitized.Policies[0].CallerScope)
 	}
-	if sanitized.Keys[0].KeySHA256 != hashKey("secret-a") {
-		t.Fatalf("key hash = %q", sanitized.Keys[0].KeySHA256)
-	}
-	policy := snapshot.ByHash[hashKey("secret-a")]
+	first := snapshot.ByCallerScope[scopeA]
 	for model, want := range map[string]bool{
-		"gpt-5":          true,
-		"gpt-danger":     false,
-		"provider/model": true,
-		"claude-sonnet":  false,
+		"gpt-5":      true,
+		"gpt-danger": false,
+		"claude":     false,
 	} {
-		if got := policyAllows(snapshot, policy, model); got != want {
-			t.Errorf("policyAllows(%q) = %v, want %v", model, got, want)
+		if got := policyAllows(first, model); got != want {
+			t.Errorf("first policyAllows(%q) = %v, want %v", model, got, want)
+		}
+	}
+	second := snapshot.ByCallerScope[scopeB]
+	if !policyAllows(second, "gpt-5") || policyAllows(second, "private-model") {
+		t.Fatal("empty allow_models did not allow all models except deny_models")
+	}
+}
+
+func TestCompileDocumentRejectsV1InvalidScopeAndDuplicates(t *testing.T) {
+	if _, _, err := compileDocument(policyDocument{Version: 1}); err == nil || !strings.Contains(err.Error(), "only version 2") {
+		t.Fatalf("v1 error = %v", err)
+	}
+	if _, _, err := compileDocument(policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: "not-a-scope"}}}); err == nil {
+		t.Fatal("invalid caller_scope was accepted")
+	}
+	if _, _, err := compileDocument(policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: scopeA}, {CallerScope: scopeA}}}); err == nil || !strings.Contains(err.Error(), "duplicate caller_scope") {
+		t.Fatalf("duplicate error = %v", err)
+	}
+	for _, policy := range []policyConfig{
+		{CallerScope: scopeA, AllowModels: []string{" "}},
+		{CallerScope: scopeA, DenyModels: []string{"\t"}},
+	} {
+		if _, _, err := compileDocument(policyDocument{Version: 2, Policies: []policyConfig{policy}}); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+			t.Fatalf("blank model pattern error = %v", err)
 		}
 	}
 }
 
-func TestCompileDocumentRejectsDuplicateHashes(t *testing.T) {
-	_, _, err := compileDocument(policyDocument{Version: 1, Keys: []keyConfig{
-		{ID: "one", Key: "same"},
-		{ID: "two", KeySHA256: hashKey("same")},
-	}})
-	if err == nil || !strings.Contains(err.Error(), "duplicate key_sha256") {
-		t.Fatalf("error = %v, want duplicate hash error", err)
+func TestInterceptorUsesOnlyCallerScopeMetadata(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
+		CallerScope: scopeA, AllowModels: []string{"gpt-*"},
+	}}})
+
+	allowed := callIntercept(t, requestInterceptRequest{RequestedModel: "gpt-5", Metadata: map[string]any{"caller_scope": scopeA}})
+	if allowed.Terminate {
+		t.Fatalf("allowed response = %#v", allowed)
+	}
+	denied := callIntercept(t, requestInterceptRequest{RequestedModel: "claude-sonnet", Metadata: map[string]any{"caller_scope": scopeA}})
+	if !denied.Terminate || denied.StatusCode != http.StatusForbidden {
+		t.Fatalf("denied response = %#v", denied)
+	}
+	if strings.Contains(string(denied.ResponseBody), scopeA) {
+		t.Fatalf("403 leaked caller_scope: %s", denied.ResponseBody)
+	}
+
+	// Even a valid raw key in a header cannot replace missing CPA metadata.
+	headerOnly := callIntercept(t, requestInterceptRequest{
+		RequestedModel: "gpt-5",
+		Headers:        http.Header{"Authorization": {"Bearer secret-a"}},
+	})
+	if !headerOnly.Terminate || headerOnly.StatusCode != http.StatusForbidden {
+		t.Fatalf("header fallback was used: %#v", headerOnly)
 	}
 }
 
-func TestExtractAPIKeySources(t *testing.T) {
-	tests := []struct {
-		name    string
-		headers http.Header
-		query   url.Values
-		allow   bool
-		want    string
-	}{
-		{name: "bearer", headers: http.Header{"Authorization": {"Bearer abc"}}, want: "abc"},
-		{name: "x api key", headers: http.Header{"X-Api-Key": {"xyz"}}, want: "xyz"},
-		{name: "google", headers: http.Header{"X-Goog-Api-Key": {"goog"}}, want: "goog"},
-		{name: "query", query: url.Values{"key": {"query"}}, allow: true, want: "query"},
-		{name: "query disabled", query: url.Values{"key": {"query"}}, want: ""},
+func TestInterceptorIdentityAndUnconfiguredKeyRules(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: scopeA, DenyModels: []string{"blocked"}}}})
+
+	if response := callIntercept(t, requestInterceptRequest{}); !response.Terminate {
+		t.Fatal("missing caller_scope was allowed while policies exist")
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, _ := extractAPIKey(test.headers, test.query, test.allow)
-			if got != test.want {
-				t.Fatalf("extractAPIKey() = %q, want %q", got, test.want)
-			}
-		})
+	for _, invalidScope := range []any{"short", strings.Repeat("z", 64), 42} {
+		if response := callIntercept(t, requestInterceptRequest{RequestedModel: "anything", Metadata: map[string]any{"caller_scope": invalidScope}}); !response.Terminate {
+			t.Fatalf("invalid caller_scope %#v was allowed while policies exist", invalidScope)
+		}
+	}
+	if response := callIntercept(t, requestInterceptRequest{RequestedModel: "blocked", Metadata: map[string]any{"caller_scope": scopeB}}); response.Terminate {
+		t.Fatalf("unconfigured caller_scope was denied: %#v", response)
+	}
+	if response := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{"caller_scope": scopeA}}); !response.Terminate {
+		t.Fatal("configured caller_scope with an unavailable model was allowed")
+	}
+
+	installTestPolicy(t, policyDocument{Version: 2})
+	if response := callIntercept(t, requestInterceptRequest{RequestedModel: "anything"}); response.Terminate {
+		t.Fatalf("missing caller_scope was denied with no configured policies: %#v", response)
 	}
 }
 
-func TestExtractModelFromJSONAndGeminiPath(t *testing.T) {
-	if got := extractModel("/v1/chat/completions", nil, []byte(`{"model":"gpt-5"}`)); got != "gpt-5" {
-		t.Fatalf("JSON model = %q", got)
+func TestInitialInvalidConfigurationBlocksAll(t *testing.T) {
+	globalState.clear()
+	t.Cleanup(globalState.clear)
+	raw, _ := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("version: 1\npolicies: []\n")})
+	if err := configure(raw); err != nil {
+		t.Fatalf("configure() error = %v", err)
 	}
-	if got := extractModel("/v1beta/models/gemini-2.5-pro:generateContent", nil, nil); got != "gemini-2.5-pro" {
-		t.Fatalf("Gemini path model = %q", got)
+	response := callIntercept(t, requestInterceptRequest{RequestedModel: "gpt-5", Metadata: map[string]any{"caller_scope": scopeB}})
+	if !response.Terminate || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("initial invalid configuration did not block all: %#v", response)
+	}
+	_, snapshot, _, _, _, lastError := globalState.current()
+	if !snapshot.BlockAll || !strings.Contains(lastError, "only version 2") {
+		t.Fatalf("snapshot=%#v lastError=%q", snapshot, lastError)
 	}
 }
 
-func TestExtractModelFromLiveMultipartAndDefault(t *testing.T) {
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormField("session")
+func TestConfigurePreservesLastValidPolicyOnInvalidReload(t *testing.T) {
+	globalState.clear()
+	t.Cleanup(globalState.clear)
+	valid, _ := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("enabled: true\npriority: 10\nstore: memory\nversion: 2\npolicies:\n  - caller_scope: " + scopeA + "\n    allow_models: [gpt-*]\n    deny_models: []\n")})
+	if err := configure(valid); err != nil {
+		t.Fatal(err)
+	}
+	invalid, _ := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("version: 2\nunknown_field: true\n")})
+	if err := configure(invalid); err != nil {
+		t.Fatalf("invalid reconfigure should retain the snapshot: %v", err)
+	}
+	if response := callIntercept(t, requestInterceptRequest{RequestedModel: "claude", Metadata: map[string]any{"caller_scope": scopeA}}); !response.Terminate {
+		t.Fatal("last valid restrictive policy was not preserved")
+	}
+	if response := callIntercept(t, requestInterceptRequest{RequestedModel: "gpt-5", Metadata: map[string]any{"caller_scope": scopeA}}); response.Terminate {
+		t.Fatal("last valid allow policy was not preserved")
+	}
+	_, _, _, _, _, lastError := globalState.current()
+	if !strings.Contains(lastError, "unknown_field") {
+		t.Fatalf("last error = %q", lastError)
+	}
+}
+
+func TestConfiguredMissingPolicyFileFailsClosed(t *testing.T) {
+	globalState.clear()
+	t.Cleanup(globalState.clear)
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	raw, _ := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("policy_file: " + missing + "\n")})
+	if err := configure(raw); err != nil {
+		t.Fatal(err)
+	}
+	_, snapshot, _, _, _, lastError := globalState.current()
+	if !snapshot.BlockAll || !strings.Contains(lastError, "open policy file") {
+		t.Fatalf("snapshot=%#v lastError=%q", snapshot, lastError)
+	}
+}
+
+func TestPolicyFileIsStrictV2(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte("version: 2\nunknown: true\npolicies: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPolicyFile(path); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("unknown field error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\npolicies: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	document, err := readPolicyFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = part.Write([]byte(`{"model":"gpt-live-custom"}`))
-	_ = writer.Close()
-	headers := http.Header{"Content-Type": {writer.FormDataContentType()}}
-	if got := extractModel("/v1/live", headers, body.Bytes()); got != "gpt-live-custom" {
-		t.Fatalf("multipart live model = %q", got)
-	}
-	if got := extractModel("/v1/realtime/calls", http.Header{"Content-Type": {"application/sdp"}}, []byte("v=0")); got != "gpt-live-1-codex" {
-		t.Fatalf("default live model = %q", got)
+	if _, _, err := compileDocument(document); err == nil || !strings.Contains(err.Error(), "only version 2") {
+		t.Fatalf("v1 compile error = %v", err)
 	}
 }
 
-func TestLiveMultipartUsesFinalSessionAndSupportsLargeParts(t *testing.T) {
-	var duplicate bytes.Buffer
-	writer := multipart.NewWriter(&duplicate)
-	for _, model := range []string{"allowed", "denied"} {
-		part, _ := writer.CreateFormField("session")
-		_, _ = part.Write([]byte(`{"model":"` + model + `"}`))
-	}
-	_ = writer.Close()
-	headers := http.Header{"Content-Type": {writer.FormDataContentType()}}
-	if got := extractModel("/v1/live", headers, duplicate.Bytes()); got != "denied" {
-		t.Fatalf("final multipart session model = %q", got)
-	}
-
-	var large bytes.Buffer
-	largeWriter := multipart.NewWriter(&large)
-	part, _ := largeWriter.CreateFormField("session")
-	payload := `{"model":"large-denied","padding":"` + strings.Repeat("x", (3<<20)) + `"}`
-	_, _ = part.Write([]byte(payload))
-	_ = largeWriter.Close()
-	largeHeaders := http.Header{"Content-Type": {largeWriter.FormDataContentType()}}
-	if got := extractModel("/v1/live", largeHeaders, large.Bytes()); got != "large-denied" {
-		t.Fatalf("large multipart session model = %q", got)
-	}
-}
-
-func TestAlphaSearchUsesOnlyTopLevelModel(t *testing.T) {
-	body := []byte(`{"model":"denied","session":{"model":"allowed"}}`)
-	if got := extractModel("/v1/alpha/search", http.Header{"Content-Type": {"application/json"}}, body); got != "denied" {
-		t.Fatalf("alpha search model = %q", got)
-	}
-}
-
-func TestAuthenticateEnforcesPerKeyModels(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 1, DefaultAction: "deny", Keys: []keyConfig{{
-		ID: "team-a", Key: "secret-a", AllowModels: []string{"gpt-*"},
-	}}})
-
-	allowed := callAuthenticate(t, frontendAuthRequest{
-		Path:    "/v1/chat/completions",
-		Headers: http.Header{"Authorization": {"Bearer secret-a"}},
-		Body:    []byte(`{"model":"gpt-5"}`),
-	})
-	if !allowed.Authenticated || allowed.Metadata["key_id"] != "team-a" {
-		t.Fatalf("allowed response = %#v", allowed)
-	}
-	denied := callAuthenticate(t, frontendAuthRequest{
-		Path:    "/v1/chat/completions",
-		Headers: http.Header{"Authorization": {"Bearer secret-a"}},
-		Body:    []byte(`{"model":"claude-sonnet"}`),
-	})
-	if denied.Authenticated {
-		t.Fatalf("denied response = %#v", denied)
-	}
-	unknown := callAuthenticate(t, frontendAuthRequest{
-		Path:    "/v1/chat/completions",
-		Headers: http.Header{"Authorization": {"Bearer unknown"}},
-		Body:    []byte(`{"model":"gpt-5"}`),
-	})
-	if unknown.Authenticated {
-		t.Fatalf("unknown-key response = %#v", unknown)
-	}
-}
-
-func TestAuthenticateBlocksLiveModelsThatBypassRequestInterceptor(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 1, DefaultAction: "deny", Keys: []keyConfig{{
-		ID: "team-a", Key: "secret-a", AllowModels: []string{"gpt-5"},
-	}}})
-	for _, request := range []frontendAuthRequest{
-		{
-			Path: "/v1/live", Headers: http.Header{"Authorization": {"Bearer secret-a"}, "Content-Type": {"application/json"}},
-			Body: []byte(`{"session":{"model":"gpt-live-custom"}}`),
-		},
-		{
-			Path: "/v1/realtime/calls", Headers: http.Header{"Authorization": {"Bearer secret-a"}, "Content-Type": {"application/sdp"}},
-			Body: []byte("v=0"),
-		},
-	} {
-		if response := callAuthenticate(t, request); response.Authenticated {
-			t.Fatalf("live request was authenticated: %#v", request)
+func TestManagementPUTRejectsLegacyIdentityFields(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2})
+	for _, forbidden := range []string{"key", "key_sha256", "id", "enabled"} {
+		body := []byte(`{"version":2,"policies":[{"caller_scope":"` + scopeA + `","allow_models":[],"deny_models":[],"` + forbidden + `":"value"}]}`)
+		raw, err := managementReplacePolicies(body, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := decodeManagementResponse(t, raw)
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("field %q status = %d body = %s", forbidden, response.StatusCode, response.Body)
 		}
 	}
 }
 
-func TestAuthenticateLiveSidebandFailsClosedForRestrictedKeys(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 1, DefaultAction: "deny", Keys: []keyConfig{
-		{ID: "restricted", Key: "restricted-key", AllowModels: []string{"gpt-live-1-codex"}},
-		{ID: "admin", Key: "admin-key", AllowModels: []string{"*"}},
-	}})
-	for _, path := range []string{"/v1/live/call-1", "/v1/realtime/calls/call-1", "/v1/realtime"} {
-		restricted := callAuthenticate(t, frontendAuthRequest{Path: path, Headers: http.Header{"Authorization": {"Bearer restricted-key"}}})
-		if restricted.Authenticated {
-			t.Fatalf("restricted key authenticated for sideband %s", path)
-		}
-		admin := callAuthenticate(t, frontendAuthRequest{Path: path, Headers: http.Header{"Authorization": {"Bearer admin-key"}}})
-		if !admin.Authenticated {
-			t.Fatalf("unrestricted key denied for sideband %s", path)
-		}
-	}
-}
-
-func TestAlphaSearchWithoutModelRequiresUnrestrictedPolicy(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 1, DefaultAction: "deny", Keys: []keyConfig{
-		{ID: "restricted", Key: "restricted-key", AllowModels: []string{"gpt-*"}},
-		{ID: "admin", Key: "admin-key", AllowModels: []string{"*"}},
-	}})
-	request := func(key string) frontendAuthRequest {
-		return frontendAuthRequest{Path: "/v1/alpha/search", Headers: http.Header{"Authorization": {"Bearer " + key}}, Body: []byte(`{"query":"test"}`)}
-	}
-	if callAuthenticate(t, request("restricted-key")).Authenticated {
-		t.Fatal("restricted key authenticated for model-less alpha search")
-	}
-	if !callAuthenticate(t, request("admin-key")).Authenticated {
-		t.Fatal("unrestricted key denied for model-less alpha search")
-	}
-}
-
-func TestAuthenticateCanDenyModelsList(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 1, ModelsEndpoint: "deny", Keys: []keyConfig{{
-		ID: "team-a", Key: "secret-a", AllowModels: []string{"*"},
-	}}})
-	response := callAuthenticate(t, frontendAuthRequest{
-		Path: "/v1/models", Headers: http.Header{"X-Api-Key": {"secret-a"}},
-	})
-	if response.Authenticated {
-		t.Fatalf("models list response = %#v", response)
-	}
-}
-
-func TestCallerScopeMatchesCPAFixedVector(t *testing.T) {
-	const want = "3394aaad3539fa0c62135da7b4685c8550686b33cccf7399c940c0a6f1f3faac"
-	if got := callerScope(principalForHash(hashKey("secret-a"))); got != want {
-		t.Fatalf("callerScope() = %q, want CPA vector %q", got, want)
-	}
-}
-
-func TestInterceptorUsesCallerScopeAndReturns403(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 1, DefaultAction: "deny", Keys: []keyConfig{{
-		ID: "team-a", Key: "secret-a", AllowModels: []string{"gpt-*"},
-	}}})
-	keyHash := hashKey("secret-a")
-	response := callIntercept(t, requestInterceptRequest{
-		RequestedModel: "claude-sonnet",
-		Metadata:       map[string]any{"caller_scope": callerScope(principalForHash(keyHash))},
-	})
-	if !response.Terminate || response.StatusCode != http.StatusForbidden {
-		t.Fatalf("interceptor response = %#v", response)
-	}
-	if !strings.Contains(string(response.ResponseBody), "model_access_denied") {
-		t.Fatalf("response body = %s", response.ResponseBody)
-	}
-}
-
-func TestManagementReplacePersistsOnlyHashes(t *testing.T) {
+func TestManagementPersistenceAndGETUseOnlyV2Schema(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := filepath.Join(dir, "policies.yaml")
-	installTestPolicy(t, policyDocument{Version: 1})
+	installTestPolicy(t, policyDocument{Version: 2})
 	cfg, snapshot, _, _, _, _ := globalState.current()
 	cfg.PolicyFile = policyPath
 	globalState.replace(cfg, snapshot, "test")
 
-	body := []byte(`{"version":1,"default_action":"deny","keys":[{"id":"team-a","key":"do-not-persist","allow_models":["gpt-*"]}]}`)
+	body := []byte(`{"version":2,"policies":[{"caller_scope":"` + scopeA + `","allow_models":["gpt-*"],"deny_models":[]}]}`)
 	raw, err := managementReplacePolicies(body, "")
 	if err != nil {
-		t.Fatalf("managementReplacePolicies() error = %v", err)
+		t.Fatal(err)
 	}
-	var response managementResponse
-	unwrapEnvelope(t, raw, &response)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d body = %s", response.StatusCode, response.Body)
+	if response := decodeManagementResponse(t, raw); response.StatusCode != http.StatusOK {
+		t.Fatalf("PUT status = %d body = %s", response.StatusCode, response.Body)
 	}
 	persisted, err := os.ReadFile(policyPath)
 	if err != nil {
-		t.Fatalf("read policy: %v", err)
+		t.Fatal(err)
 	}
-	if strings.Contains(string(persisted), "do-not-persist") {
-		t.Fatalf("plain key leaked to policy file:\n%s", persisted)
+	for _, forbidden := range []string{"key:", "key_sha256:", "id:", "enabled:"} {
+		if strings.Contains(string(persisted), forbidden) {
+			t.Fatalf("persisted policy contains %q:\n%s", forbidden, persisted)
+		}
 	}
-	if !strings.Contains(string(persisted), hashKey("do-not-persist")) {
-		t.Fatalf("policy file does not contain hash:\n%s", persisted)
+	if !strings.Contains(string(persisted), "version: 2") || !strings.Contains(string(persisted), "caller_scope:") {
+		t.Fatalf("unexpected persisted document:\n%s", persisted)
+	}
+
+	raw, err = managementPolicies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := decodeManagementResponse(t, raw)
+	for _, forbidden := range []string{`"key":`, `"key_sha256":`, `"id":`, `"enabled":`} {
+		if strings.Contains(string(response.Body), forbidden) {
+			t.Fatalf("GET policy contains forbidden field %s: %s", forbidden, response.Body)
+		}
+	}
+	if strings.Contains(string(response.Body), `"allow_models":null`) || strings.Contains(string(response.Body), `"deny_models":null`) {
+		t.Fatalf("GET policy returned null model arrays: %s", response.Body)
+	}
+	var payload struct {
+		Policy map[string]json.RawMessage `json:"policy"`
+	}
+	if err := json.Unmarshal(response.Body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Policy) != 2 || payload.Policy["version"] == nil || payload.Policy["policies"] == nil {
+		t.Fatalf("GET policy schema = %#v", payload.Policy)
 	}
 }
 
-func TestPolicyFileRejectsUnknownYAMLFields(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "policy.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\nmodels_endpont: allow\nkeys: []\n"), 0o600); err != nil {
+func TestManagementReloadKeepsLastValidSnapshotOnInvalidFile(t *testing.T) {
+	policyPath := filepath.Join(t.TempDir(), "policies.yaml")
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
+		CallerScope: scopeA, AllowModels: []string{"gpt-*"},
+	}}})
+	cfg, snapshot, _, _, _, _ := globalState.current()
+	cfg.PolicyFile = policyPath
+	globalState.replace(cfg, snapshot, "test")
+	if err := os.WriteFile(policyPath, []byte("version: 1\npolicies: []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readPolicyFile(path); err == nil || !strings.Contains(err.Error(), "models_endpont") {
-		t.Fatalf("readPolicyFile() error = %v", err)
+
+	raw, err := managementReload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := decodeManagementResponse(t, raw)
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("reload status = %d body = %s", response.StatusCode, response.Body)
+	}
+	if result := callIntercept(t, requestInterceptRequest{RequestedModel: "claude", Metadata: map[string]any{"caller_scope": scopeA}}); !result.Terminate {
+		t.Fatal("invalid reload replaced the last valid snapshot")
+	}
+	_, _, _, _, _, lastError := globalState.current()
+	if !strings.Contains(lastError, "only version 2") {
+		t.Fatalf("last error = %q", lastError)
 	}
 }
 
 func TestConcurrentManagementUpdatesKeepDiskAndMemoryConsistent(t *testing.T) {
-	dir := t.TempDir()
-	policyPath := filepath.Join(dir, "policies.yaml")
-	installTestPolicy(t, policyDocument{Version: 1})
+	policyPath := filepath.Join(t.TempDir(), "policies.yaml")
+	installTestPolicy(t, policyDocument{Version: 2})
 	cfg, snapshot, _, _, _, _ := globalState.current()
 	cfg.PolicyFile = policyPath
 	globalState.replace(cfg, snapshot, "test")
 
 	bodies := [][]byte{
-		[]byte(`{"version":1,"keys":[{"id":"one","key":"secret-one","allow_models":["gpt-*"]}]}`),
-		[]byte(`{"version":1,"keys":[{"id":"two","key":"secret-two","allow_models":["claude-*"]}]}`),
+		[]byte(`{"version":2,"policies":[{"caller_scope":"` + scopeA + `","allow_models":["gpt-*"],"deny_models":[]}]}`),
+		[]byte(`{"version":2,"policies":[{"caller_scope":"` + scopeB + `","allow_models":["claude-*"],"deny_models":[]}]}`),
 	}
 	var wait sync.WaitGroup
 	for _, body := range bodies {
@@ -334,55 +324,61 @@ func TestConcurrentManagementUpdatesKeepDiskAndMemoryConsistent(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, memorySnapshot, _, _, _, _ := globalState.current()
-	if len(diskSnapshot.ByHash) != 1 || len(memorySnapshot.ByHash) != 1 {
-		t.Fatalf("disk policies = %d, memory policies = %d", len(diskSnapshot.ByHash), len(memorySnapshot.ByHash))
+	if len(diskSnapshot.ByCallerScope) != 1 || len(memorySnapshot.ByCallerScope) != 1 {
+		t.Fatalf("disk policies = %d, memory policies = %d", len(diskSnapshot.ByCallerScope), len(memorySnapshot.ByCallerScope))
 	}
-	for hash := range diskSnapshot.ByHash {
-		if _, exists := memorySnapshot.ByHash[hash]; !exists {
-			t.Fatalf("disk and memory differ: disk hash %s", hash)
+	for scope := range diskSnapshot.ByCallerScope {
+		if _, exists := memorySnapshot.ByCallerScope[scope]; !exists {
+			t.Fatalf("disk and memory differ: disk caller_scope %s", scope)
 		}
 	}
 }
 
-func TestConfigureLegacySchemaRegistersFailClosed(t *testing.T) {
-	globalState.clear()
-	t.Cleanup(globalState.clear)
-	raw, _ := json.Marshal(lifecycleRequest{SchemaVersion: 1, ConfigYAML: []byte("keys:\n  - id: old\n    key: old-secret\n    allow_models: ['*']\n")})
-	if err := configure(raw); err != nil {
-		t.Fatalf("configure() error = %v", err)
+func TestStatusReportsBuiltinAuthenticationContract(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: scopeA}}})
+	raw, err := managementStatus()
+	if err != nil {
+		t.Fatal(err)
 	}
-	response := callAuthenticate(t, frontendAuthRequest{
-		Path: "/v1/chat/completions", Headers: http.Header{"Authorization": {"Bearer old-secret"}}, Body: []byte(`{"model":"gpt-5"}`),
-	})
-	if response.Authenticated {
-		t.Fatal("legacy host schema did not fail closed")
+	response := decodeManagementResponse(t, raw)
+	var status map[string]any
+	if err := json.Unmarshal(response.Body, &status); err != nil {
+		t.Fatal(err)
 	}
-	registration := pluginRegistration()
-	if registration.SchemaVersion != 1 || registration.Capabilities.RequestInterceptor {
-		t.Fatalf("legacy registration = %#v", registration)
+	for field, want := range map[string]string{
+		"auth_mode":               "cpa_builtin_api_keys",
+		"identity_source":         "Metadata.caller_scope",
+		"unconfigured_key_action": "allow",
+	} {
+		if status[field] != want {
+			t.Errorf("status[%q] = %#v, want %q", field, status[field], want)
+		}
+	}
+	if status["policy_count"] != float64(1) {
+		t.Fatalf("policy_count = %#v", status["policy_count"])
 	}
 }
 
-func TestConfigurePreservesLastValidPolicyOnInvalidYAML(t *testing.T) {
-	globalState.clear()
-	t.Cleanup(globalState.clear)
-	valid, _ := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("keys:\n  - id: good\n    key: secret\n    allow_models: ['gpt-*']\n")})
-	if err := configure(valid); err != nil {
+func TestRegistrationHasNoFrontendAuthCapabilityOrMethod(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2})
+	globalState.setHostSchema(2)
+	raw, err := json.Marshal(pluginRegistration().Capabilities)
+	if err != nil {
 		t.Fatal(err)
 	}
-	invalid, _ := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("models_endpont: allow\n")})
-	if err := configure(invalid); err != nil {
-		t.Fatalf("invalid reconfigure should preserve and register: %v", err)
+	if strings.Contains(string(raw), "frontend_auth") {
+		t.Fatalf("registration still advertises frontend auth: %s", raw)
 	}
-	response := callAuthenticate(t, frontendAuthRequest{
-		Path: "/v1/chat/completions", Headers: http.Header{"Authorization": {"Bearer secret"}}, Body: []byte(`{"model":"gpt-5"}`),
-	})
-	if !response.Authenticated {
-		t.Fatal("last valid policy was not preserved")
+	response, err := handleMethod("frontend_auth.authenticate", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, _, _, _, _, lastError := globalState.current()
-	if !strings.Contains(lastError, "models_endpont") {
-		t.Fatalf("last error = %q", lastError)
+	var wrapped envelope
+	if err := json.Unmarshal(response, &wrapped); err != nil {
+		t.Fatal(err)
+	}
+	if wrapped.OK || wrapped.Error == nil || wrapped.Error.Code != "unknown_method" {
+		t.Fatalf("frontend auth method response = %#v", wrapped)
 	}
 }
 
@@ -392,26 +388,9 @@ func installTestPolicy(t *testing.T, document policyDocument) {
 	if err != nil {
 		t.Fatalf("compile test policy: %v", err)
 	}
-	cfg := pluginConfig{
-		DefaultAction:  sanitized.DefaultAction,
-		ModelsEndpoint: sanitized.ModelsEndpoint,
-		AllowQueryKeys: sanitized.AllowQueryKeys,
-		Keys:           sanitized.Keys,
-	}
+	cfg := pluginConfig{Version: sanitized.Version, Policies: clonePolicyConfigs(sanitized.Policies)}
 	globalState.replace(cfg, snapshot, "test")
 	t.Cleanup(globalState.clear)
-}
-
-func callAuthenticate(t *testing.T, request frontendAuthRequest) frontendAuthResponse {
-	t.Helper()
-	rawRequest, _ := json.Marshal(request)
-	rawResponse, err := authenticate(rawRequest)
-	if err != nil {
-		t.Fatalf("authenticate() error = %v", err)
-	}
-	var response frontendAuthResponse
-	unwrapEnvelope(t, rawResponse, &response)
-	return response
 }
 
 func callIntercept(t *testing.T, request requestInterceptRequest) requestInterceptResponse {
@@ -423,6 +402,13 @@ func callIntercept(t *testing.T, request requestInterceptRequest) requestInterce
 	}
 	var response requestInterceptResponse
 	unwrapEnvelope(t, rawResponse, &response)
+	return response
+}
+
+func decodeManagementResponse(t *testing.T, raw []byte) managementResponse {
+	t.Helper()
+	var response managementResponse
+	unwrapEnvelope(t, raw, &response)
 	return response
 }
 

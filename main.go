@@ -99,10 +99,6 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			return nil, err
 		}
 		return okEnvelope(pluginRegistration())
-	case methodFrontendAuthIdentifier:
-		return okEnvelope(identifierResponse{Identifier: pluginID})
-	case methodFrontendAuthAuthenticate:
-		return authenticate(request)
 	case methodRequestInterceptBefore, methodRequestInterceptAfter:
 		return interceptRequest(request)
 	case methodManagementRegister:
@@ -125,22 +121,18 @@ func pluginRegistration() registration {
 		Metadata: metadata{
 			Name:             "Key Model Access",
 			Version:          pluginVersion,
-			Author:           "router-for-me community",
-			GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
+			Author:           "Supra4E8C",
+			GitHubRepository: "https://github.com/LTbinglingfeng/key-model-access",
 			Logo:             "",
 			ConfigFields: []configField{
-				{Name: "policy_file", Type: "string", Description: "Optional YAML policy file used for persistent Management API updates."},
-				{Name: "default_action", Type: "enum", EnumValues: []string{"deny", "allow"}, Description: "Action for models not matched by allow_models or deny_models."},
-				{Name: "models_endpoint", Type: "enum", EnumValues: []string{"allow", "deny"}, Description: "Allow or deny the global /v1/models endpoint. Per-key filtering is not available in the CPA plugin API."},
-				{Name: "allow_query_keys", Type: "boolean", Description: "Accept API keys from the key and auth_token query parameters."},
-				{Name: "keys", Type: "array", Description: "Per-key model policies. Plain keys are hashed in memory; key_sha256 is preferred."},
+				{Name: "policy_file", Type: "string", Description: "Optional strict YAML v2 policy document used for loading and persistent Management API updates."},
+				{Name: "version", Type: "number", Description: "Inline policy schema version. Only version 2 is supported."},
+				{Name: "policies", Type: "array", Description: "Per-caller-scope allow_models and deny_models policies. caller_scope is derived by CPA's built-in API-key authentication."},
 			},
 		},
 		Capabilities: capabilities{
-			FrontendAuthProvider:          true,
-			FrontendAuthProviderExclusive: true,
-			RequestInterceptor:            hostSchema >= schemaVersion,
-			ManagementAPI:                 true,
+			RequestInterceptor: hostSchema >= schemaVersion,
+			ManagementAPI:      true,
 		},
 	}
 }

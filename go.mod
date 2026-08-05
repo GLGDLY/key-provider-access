@@ -1,4 +1,4 @@
-module github.com/router-for-me/key-model-access
+module github.com/LTbinglingfeng/key-model-access
 
 go 1.24.0
 

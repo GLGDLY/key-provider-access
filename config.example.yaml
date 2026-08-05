@@ -1,24 +1,23 @@
-# Merge this block into CLIProxyAPI's config.yaml.
+# Merge this example into CLIProxyAPI's config.yaml.
+# CPA's built-in provider owns and authenticates these raw API keys.
+api-keys:
+  - "replace-with-a-real-api-key"
+
 plugins:
   enabled: true
   dir: "plugins"
   configs:
     key-model-access:
       enabled: true
-      # Highest-priority exclusive frontend auth plugin wins.
       priority: 100
 
-      # Relative paths resolve from CLIProxyAPI's working directory.
-      # Set this to make Management API changes persistent.
-      policy_file: "config/key-model-access-policies.yaml"
+      # Safe default: use an inline, empty v2 document. Authenticated CPA keys
+      # without a policy are allowed to use all interceptor-covered models.
+      version: 2
+      policies: []
 
-      # Used only until policy_file exists. Thereafter the file is authoritative.
-      default_action: deny
-      models_endpoint: allow
-      allow_query_keys: true
-      keys:
-        - id: bootstrap-admin
-          # For first boot only. Prefer key_sha256 in production.
-          key: "replace-with-a-real-api-key"
-          allow_models:
-            - "*"
+      # Optional persistence. Do not enable this until the target file exists:
+      # copy/create a v2 document matching policies.example.yaml first. A missing
+      # policy_file currently makes the plugin fail closed.
+      # Relative paths resolve from CLIProxyAPI's working directory.
+      # policy_file: "config/key-model-access-policies.yaml"

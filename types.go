@@ -12,17 +12,15 @@ const (
 	pluginID             = "key-model-access"
 )
 
-var pluginVersion = "0.2.0"
+var pluginVersion = "0.1.0"
 
 const (
-	methodPluginRegister           = "plugin.register"
-	methodPluginReconfigure        = "plugin.reconfigure"
-	methodFrontendAuthIdentifier   = "frontend_auth.identifier"
-	methodFrontendAuthAuthenticate = "frontend_auth.authenticate"
-	methodRequestInterceptBefore   = "request.intercept_before"
-	methodRequestInterceptAfter    = "request.intercept_after"
-	methodManagementRegister       = "management.register"
-	methodManagementHandle         = "management.handle"
+	methodPluginRegister         = "plugin.register"
+	methodPluginReconfigure      = "plugin.reconfigure"
+	methodRequestInterceptBefore = "request.intercept_before"
+	methodRequestInterceptAfter  = "request.intercept_after"
+	methodManagementRegister     = "management.register"
+	methodManagementHandle       = "management.handle"
 )
 
 type envelope struct {
@@ -66,28 +64,8 @@ type configField struct {
 }
 
 type capabilities struct {
-	FrontendAuthProvider          bool `json:"frontend_auth_provider"`
-	FrontendAuthProviderExclusive bool `json:"frontend_auth_provider_exclusive"`
-	RequestInterceptor            bool `json:"request_interceptor"`
-	ManagementAPI                 bool `json:"management_api"`
-}
-
-type identifierResponse struct {
-	Identifier string `json:"identifier"`
-}
-
-type frontendAuthRequest struct {
-	Method  string      `json:"Method"`
-	Path    string      `json:"Path"`
-	Headers http.Header `json:"Headers"`
-	Query   url.Values  `json:"Query"`
-	Body    []byte      `json:"Body"`
-}
-
-type frontendAuthResponse struct {
-	Authenticated bool              `json:"Authenticated"`
-	Principal     string            `json:"Principal,omitempty"`
-	Metadata      map[string]string `json:"Metadata,omitempty"`
+	RequestInterceptor bool `json:"request_interceptor"`
+	ManagementAPI      bool `json:"management_api"`
 }
 
 type requestInterceptRequest struct {

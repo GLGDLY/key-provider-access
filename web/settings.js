@@ -4,24 +4,23 @@
   const PATHS = {
     status: "/v0/management/plugins/key-model-access/status",
     policies: "/v0/management/plugins/key-model-access/policies",
-    reload: "/v0/management/plugins/key-model-access/reload"
+    reload: "/v0/management/plugins/key-model-access/reload",
+    apiKeys: "/v0/management/api-keys"
   };
 
   const icons = {
     eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>',
     eyeOff: '<svg viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 6.1A10.5 10.5 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-2.1 2.8M6.2 6.2C3.8 8 2.5 12 2.5 12s3.5 6 9.5 6c1.2 0 2.3-.2 3.3-.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
-    plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
     search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>',
-    sliders: '<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>',
+    overview: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>',
     key: '<svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M15 12v2"/></svg>',
     refresh: '<svg viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5"/><path d="M6.1 8.2A7 7 0 0 1 18.8 9M17.9 15.8A7 7 0 0 1 5.2 15"/></svg>',
+    file: '<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>',
     save: '<svg viewBox="0 0 24 24"><path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4M8 20v-6h8v6"/></svg>',
     sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
     moon: '<svg viewBox="0 0 24 24"><path d="M20 15.2A8 8 0 0 1 8.8 4 8.2 8.2 0 1 0 20 15.2Z"/></svg>',
     logout: '<svg viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>',
-    copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
-    trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg>',
     warning: '<svg viewBox="0 0 24 24"><path d="M12 3 2.8 19h18.4L12 3Z"/><path d="M12 9v4M12 16.5h.01"/></svg>',
     check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>',
     spinner: '<svg class="spinner" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-9 9"/><path d="M3 12a9 9 0 0 1 9-9" opacity=".35"/></svg>'
@@ -30,9 +29,10 @@
   const state = {
     token: "",
     status: null,
-    policy: null,
+    keys: [],
+    stalePolicies: [],
     revision: 0,
-    selection: { type: "global", index: -1 },
+    selectedIndex: -1,
     dirty: false,
     busy: false,
     search: ""
@@ -45,6 +45,7 @@
   const nav = $("#policyNav");
   const saveButton = $("#saveButton");
   const reloadButton = $("#reloadButton");
+  const refreshDataButton = $("#refreshDataButton");
   const healthBadge = $("#healthBadge");
   let navFrame = 0;
 
@@ -54,27 +55,42 @@
     })[character]);
   }
 
-  function normalizePolicy(raw) {
-    const policy = raw && typeof raw === "object" ? raw : {};
-    return {
-      version: 1,
-      default_action: policy.default_action === "allow" ? "allow" : "deny",
-      models_endpoint: policy.models_endpoint === "deny" ? "deny" : "allow",
-      allow_query_keys: policy.allow_query_keys !== false,
-      keys: Array.isArray(policy.keys) ? policy.keys.map((item) => ({
-        id: String(item.id || ""),
-        enabled: item.enabled !== false,
-        key_sha256: String(item.key_sha256 || ""),
-        allow_models: Array.isArray(item.allow_models) ? [...item.allow_models] : [],
-        deny_models: Array.isArray(item.deny_models) ? [...item.deny_models] : [],
-        _credential: ""
-      })) : []
-    };
+  function normalizeModels(value) {
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.map((model) => String(model).trim()).filter(Boolean))];
   }
 
-  function fingerprint(hash) {
-    if (!hash) return "尚未设置凭据";
-    return `${hash.slice(0, 8)}…${hash.slice(-6)}`;
+  function normalizePolicyDocument(raw) {
+    if (!raw || typeof raw !== "object" || raw.version !== 2 || !Array.isArray(raw.policies)) {
+      throw new Error("插件返回了无效的 v2 策略文档。");
+    }
+    const seen = new Set();
+    const policies = raw.policies.map((item, index) => {
+      if (!item || typeof item !== "object") throw new Error(`策略 ${index + 1} 格式无效。`);
+      const scope = typeof item.caller_scope === "string" ? item.caller_scope.trim().toLowerCase() : "";
+      if (!/^[0-9a-f]{64}$/.test(scope)) throw new Error(`策略 ${index + 1} 的 caller scope 无效。`);
+      if (seen.has(scope)) throw new Error(`策略 ${index + 1} 的 caller scope 重复。`);
+      seen.add(scope);
+      for (const field of ["allow_models", "deny_models"]) {
+        if (!Array.isArray(item[field]) || item[field].some((model) => typeof model !== "string" || !model.trim())) {
+          throw new Error(`策略 ${index + 1} 的 ${field} 无效。`);
+        }
+      }
+      return {
+        caller_scope: scope,
+        allow_models: normalizeModels(item.allow_models),
+        deny_models: normalizeModels(item.deny_models)
+      };
+    });
+    return { version: 2, policies };
+  }
+
+  function shortFingerprint(scope) {
+    return `${scope.slice(0, 10)}…${scope.slice(-6)}`;
+  }
+
+  function keyLabel(index) {
+    return `CPA API Key ${String(index + 1).padStart(2, "0")}`;
   }
 
   async function api(path, options = {}) {
@@ -85,6 +101,7 @@
     try {
       const response = await fetch(path, {
         ...options,
+        method,
         signal: controller.signal,
         headers: {
           Accept: "application/json",
@@ -97,10 +114,8 @@
       let payload = null;
       try { payload = await response.json(); } catch (_) { payload = null; }
       if (!response.ok) {
-        const message = payload && (payload.error?.message || payload.error)
-          ? (payload.error?.message || payload.error)
-          : `请求失败（HTTP ${response.status}）`;
-        const error = new Error(message);
+        const detail = payload && (payload.error?.message || payload.error);
+        const error = new Error(detail ? String(detail) : `请求失败（HTTP ${response.status}）`);
         error.status = response.status;
         throw error;
       }
@@ -117,19 +132,146 @@
     }
   }
 
+  async function sha256Hex(value) {
+    const bytes = new TextEncoder().encode(value);
+    if (window.crypto?.subtle) {
+      const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+      return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    // SubtleCrypto is unavailable on plain HTTP origins other than localhost.
+    // Keep remote CPA panels functional without sending raw API keys elsewhere.
+    return sha256FallbackHex(bytes);
+  }
+
+  function sha256FallbackHex(bytes) {
+    const constants = [
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    ];
+    const stateWords = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
+    const padded = new Uint8Array(paddedLength);
+    padded.set(bytes);
+    padded[bytes.length] = 0x80;
+    const bitLength = bytes.length * 8;
+    const view = new DataView(padded.buffer);
+    view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000), false);
+    view.setUint32(paddedLength - 4, bitLength >>> 0, false);
+    const words = new Uint32Array(64);
+    const rotateRight = (word, count) => (word >>> count) | (word << (32 - count));
+
+    for (let offset = 0; offset < paddedLength; offset += 64) {
+      for (let index = 0; index < 16; index += 1) words[index] = view.getUint32(offset + index * 4, false);
+      for (let index = 16; index < 64; index += 1) {
+        const left = words[index - 15];
+        const right = words[index - 2];
+        const sigma0 = rotateRight(left, 7) ^ rotateRight(left, 18) ^ (left >>> 3);
+        const sigma1 = rotateRight(right, 17) ^ rotateRight(right, 19) ^ (right >>> 10);
+        words[index] = (words[index - 16] + sigma0 + words[index - 7] + sigma1) >>> 0;
+      }
+      let [a, b, c, d, e, f, g, h] = stateWords;
+      for (let index = 0; index < 64; index += 1) {
+        const sum1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
+        const choose = (e & f) ^ (~e & g);
+        const temp1 = (h + sum1 + choose + constants[index] + words[index]) >>> 0;
+        const sum0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
+        const majority = (a & b) ^ (a & c) ^ (b & c);
+        const temp2 = (sum0 + majority) >>> 0;
+        h = g; g = f; f = e; e = (d + temp1) >>> 0; d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+      }
+      stateWords[0] = (stateWords[0] + a) >>> 0;
+      stateWords[1] = (stateWords[1] + b) >>> 0;
+      stateWords[2] = (stateWords[2] + c) >>> 0;
+      stateWords[3] = (stateWords[3] + d) >>> 0;
+      stateWords[4] = (stateWords[4] + e) >>> 0;
+      stateWords[5] = (stateWords[5] + f) >>> 0;
+      stateWords[6] = (stateWords[6] + g) >>> 0;
+      stateWords[7] = (stateWords[7] + h) >>> 0;
+    }
+    return stateWords.map((word) => word.toString(16).padStart(8, "0")).join("");
+  }
+
+  async function fetchCurrentKeys() {
+    const payload = await api(PATHS.apiKeys, { method: "GET" });
+    const values = Array.isArray(payload?.["api-keys"]) ? payload["api-keys"] : null;
+    if (!values) throw new Error("CPA 返回了无法识别的 API Key 列表。");
+
+    const temporaryValues = values.slice();
+    const normalizedValues = temporaryValues.map((value) => String(value).trim()).filter(Boolean);
+    try {
+      const scopes = await Promise.all(normalizedValues.map((value) =>
+        sha256Hex(`cli-proxy-api:caller-scope:v1\0${value}`)
+      ));
+      const seen = new Set();
+      return scopes.filter((scope) => {
+        if (seen.has(scope)) return false;
+        seen.add(scope);
+        return true;
+      }).map((scope) => ({
+        scope,
+        fingerprint: shortFingerprint(scope),
+        mask: "••••••••••••",
+        allow_models: [],
+        deny_models: []
+      }));
+    } finally {
+      normalizedValues.fill("");
+      temporaryValues.fill("");
+      values.fill("");
+    }
+  }
+
+  async function fetchRemoteData() {
+    // Verify Management authentication once before issuing the remaining reads.
+    const status = await api(PATHS.status, { method: "GET" });
+    const [policies, keys] = await Promise.all([
+      api(PATHS.policies, { method: "GET" }),
+      fetchCurrentKeys()
+    ]);
+    return { status, policies, keys };
+  }
+
+  function applyPolicyDocument(rawDocument) {
+    const documentValue = normalizePolicyDocument(rawDocument);
+    const byScope = new Map(documentValue.policies.map((policy) => [policy.caller_scope, policy]));
+    const currentScopes = new Set(state.keys.map((key) => key.scope));
+
+    state.keys = state.keys.map((key) => {
+      const policy = byScope.get(key.scope);
+      return {
+        ...key,
+        allow_models: policy ? [...policy.allow_models] : [],
+        deny_models: policy ? [...policy.deny_models] : []
+      };
+    });
+    state.stalePolicies = documentValue.policies
+      .filter((policy) => !currentScopes.has(policy.caller_scope))
+      .map((policy) => ({ ...policy, allow_models: [...policy.allow_models], deny_models: [...policy.deny_models] }));
+  }
+
+  function installRemoteData(remote, preferredScope = "") {
+    state.status = remote.status;
+    state.keys = remote.keys;
+    applyPolicyDocument(remote.policies?.policy);
+    state.revision = Number(remote.policies?.revision ?? remote.status?.revision ?? 0);
+    state.dirty = false;
+    state.selectedIndex = preferredScope ? state.keys.findIndex((key) => key.scope === preferredScope) : -1;
+  }
+
   async function connect(token) {
     state.token = token.trim();
     if (!state.token) return;
     setAuthBusy(true);
     $("#authError").textContent = "";
     try {
-      // Verify once first: CPA rate-limits repeated Management authentication failures.
-      const status = await api(PATHS.status);
-      const policies = await api(PATHS.policies);
-      state.status = status;
-      state.policy = normalizePolicy(policies.policy);
-      state.revision = Number(policies.revision ?? status.revision ?? 0);
-      state.dirty = false;
+      const remote = await fetchRemoteData();
+      installRemoteData(remote);
       $("#managementKey").value = "";
       authGate.hidden = true;
       app.hidden = false;
@@ -145,13 +287,14 @@
   }
 
   function disconnect() {
-    if (state.dirty && !window.confirm("有尚未保存的修改。确定断开并放弃这些修改吗？")) return;
+    if (state.dirty && !window.confirm("有尚未保存的模型规则。确定断开并放弃这些修改吗？")) return;
     state.token = "";
     state.status = null;
-    state.policy = null;
+    state.keys = [];
+    state.stalePolicies = [];
     state.revision = 0;
+    state.selectedIndex = -1;
     state.dirty = false;
-    state.selection = { type: "global", index: -1 };
     $("#managementKey").value = "";
     app.hidden = true;
     authGate.hidden = false;
@@ -168,12 +311,18 @@
     state.busy = busy;
     $("#workspace").inert = busy;
     $("#disconnectButton").disabled = busy;
+    refreshDataButton.disabled = busy;
     saveButton.disabled = busy || !state.dirty;
     reloadButton.disabled = busy || !state.status?.persistent_updates;
-    if (action === "save" && busy) saveButton.innerHTML = `${icons.spinner}<span class="label-long">正在保存</span>`;
-    else saveButton.innerHTML = `${icons.save}<span class="label-long">保存修改</span>`;
-    if (action === "reload" && busy) reloadButton.innerHTML = `${icons.spinner}<span class="label-long">正在重载</span>`;
-    else reloadButton.innerHTML = `${icons.refresh}<span class="label-long">从文件重载</span>`;
+    saveButton.innerHTML = action === "save" && busy
+      ? `${icons.spinner}<span class="label-long">正在保存</span>`
+      : `${icons.save}<span class="label-long">${state.dirty ? "保存修改" : "已保存"}</span>`;
+    reloadButton.innerHTML = action === "reload" && busy
+      ? `${icons.spinner}<span class="label-long">正在重载</span>`
+      : `${icons.file}<span class="label-long">从文件重载</span>`;
+    refreshDataButton.innerHTML = action === "refresh" && busy
+      ? icons.spinner
+      : icons.refresh;
   }
 
   function markDirty() {
@@ -190,14 +339,14 @@
 
   function syncHeader() {
     const healthy = state.status && !state.status.last_error;
-    const warning = state.status && state.status.last_error;
-    healthBadge.innerHTML = `<span class="status-dot ${warning ? "warning" : healthy ? "" : "error"}"></span><span>${escapeHTML(warning ? "策略警告" : healthy ? `Schema ${state.status.host_schema_version}` : "未连接")}</span>`;
+    const warning = state.status?.last_error;
+    healthBadge.innerHTML = `<span class="status-dot ${warning ? "warning" : healthy ? "" : "error"}"></span><span>${escapeHTML(warning ? "策略警告" : healthy ? `Schema v${state.status.schema_version || 2}` : "未连接")}</span>`;
     healthBadge.title = warning ? state.status.last_error : "插件运行正常";
     saveButton.disabled = state.busy || !state.dirty;
     reloadButton.disabled = state.busy || !state.status?.persistent_updates;
     reloadButton.title = state.status?.persistent_updates ? "从策略文件重载" : "未配置 policy_file，无法从文件重载";
     saveButton.innerHTML = `${icons.save}<span class="label-long">${state.dirty ? "保存修改" : "已保存"}</span>`;
-    $("#policyCount").textContent = `${state.policy?.keys.length || 0} 个 Key`;
+    $("#policyCount").textContent = `${state.keys.length} 个当前 Key`;
   }
 
   function syncPersistence() {
@@ -205,7 +354,7 @@
     if (!state.status) return;
     if (state.status.persistent_updates) {
       notice.className = "persistence-notice";
-      notice.textContent = `保存到 ${state.status.policy_file}`;
+      notice.textContent = `策略保存到 ${state.status.policy_file}`;
     } else {
       notice.className = "persistence-notice warning";
       notice.textContent = "当前为内存模式；插件重载后修改会丢失。请配置 policy_file。";
@@ -221,82 +370,89 @@
   }
 
   function renderNav() {
-    if (!state.policy) return;
     const query = state.search.trim().toLowerCase();
-    const keyItems = state.policy.keys.map((key, index) => ({ key, index }))
-      .filter(({ key }) => !query || key.id.toLowerCase().includes(query) || key.key_sha256.toLowerCase().includes(query));
-    const globalSelected = state.selection.type === "global";
+    const visible = state.keys.map((key, index) => ({ key, index })).filter(({ key, index }) =>
+      !query || key.fingerprint.toLowerCase().includes(query) || keyLabel(index).toLowerCase().includes(query)
+    );
     nav.innerHTML = `
-      <button class="nav-item" type="button" data-select="global" aria-current="${globalSelected ? "page" : "false"}">
-        <span class="nav-icon">${icons.sliders}</span>
-        <span class="nav-copy"><strong>全局策略</strong><span>${escapeHTML(state.policy.default_action)} · models ${escapeHTML(state.policy.models_endpoint)}</span></span>
+      <button class="nav-item" type="button" data-select="overview" aria-current="${state.selectedIndex < 0 ? "page" : "false"}">
+        <span class="nav-icon">${icons.overview}</span>
+        <span class="nav-copy"><strong>权限概览</strong><span>认证由 CPA 管理</span></span>
       </button>
-      <p class="nav-group-label">API Keys</p>
-      ${keyItems.length ? keyItems.map(({ key, index }) => `
-        <button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selection.type === "key" && state.selection.index === index ? "page" : "false"}">
+      <p class="nav-group-label">当前 CPA API Keys</p>
+      ${visible.length ? visible.map(({ key, index }) => `
+        <button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selectedIndex === index ? "page" : "false"}">
           <span class="nav-icon key">${icons.key}</span>
-          <span class="nav-copy"><strong>${escapeHTML(key.id || "未命名 Key")}</strong><span>${escapeHTML(fingerprint(key.key_sha256))}</span></span>
-          <span class="nav-state ${key.enabled ? "" : "off"}" title="${key.enabled ? "已启用" : "已停用"}"></span>
-        </button>`).join("") : `<p class="empty-nav">${query ? "没有匹配的 Key" : "尚未添加 API Key"}</p>`}
+          <span class="nav-copy"><strong>${key.mask}</strong><span>SHA-256 ${escapeHTML(key.fingerprint)}</span></span>
+        </button>`).join("") : `<p class="empty-nav">${query ? "没有匹配的 Key" : "CPA 当前没有 API Key"}</p>`}
     `;
   }
 
   function renderEditor() {
-    if (!state.policy) return;
-    if (state.selection.type === "key") {
-      const key = state.policy.keys[state.selection.index];
-      if (key) {
-        renderKeyEditor(key, state.selection.index);
-        return;
-      }
-      state.selection = { type: "global", index: -1 };
+    if (state.selectedIndex >= 0 && state.keys[state.selectedIndex]) {
+      renderKeyEditor(state.keys[state.selectedIndex], state.selectedIndex);
+      return;
     }
-    renderGlobalEditor();
+    state.selectedIndex = -1;
+    renderOverview();
   }
 
-  function segment(name, value, first, second) {
-    return `<div class="segment" role="group" aria-label="${escapeHTML(name)}">
-      <button type="button" data-setting="${escapeHTML(name)}" data-value="${first.value}" aria-pressed="${value === first.value}">${first.label}</button>
-      <button type="button" data-setting="${escapeHTML(name)}" data-value="${second.value}" aria-pressed="${value === second.value}">${second.label}</button>
-    </div>`;
+  function hasRules(key) {
+    return key.allow_models.length > 0 || key.deny_models.length > 0;
   }
 
-  function renderGlobalEditor() {
-    const policy = state.policy;
-    const statusWarning = state.status?.last_error ? `<div class="notice">${icons.warning}<span><strong>最近一次配置存在问题：</strong> ${escapeHTML(state.status.last_error)}。当前仍在使用最后一个有效策略。</span></div>` : "";
+  function renderOverview() {
+    const configured = state.keys.filter(hasRules).length;
+    const defaults = state.keys.length - configured;
+    const staleCount = state.stalePolicies.length;
+    const statusWarning = state.status?.last_error
+      ? `<div class="notice">${icons.warning}<span><strong>最近一次配置存在问题：</strong> ${escapeHTML(state.status.last_error)}。当前仍在使用最后一个有效策略。</span></div>`
+      : "";
+    const staleWarning = staleCount
+      ? `<div class="notice">${icons.warning}<span><strong>${staleCount} 条失效策略：</strong>这些 caller scope 不对应 CPA 当前 Key。保存时会原样保留，不会静默删除；请在确认旧 Key 已永久移除后通过策略文件处理。</span></div>`
+      : "";
+
     editor.innerHTML = `
       <header class="editor-head">
         <div class="editor-title-wrap">
-          <p class="editor-kicker">Policy defaults</p>
-          <h1>全局策略</h1>
-          <p class="editor-subtitle">设置未匹配模型的默认行为，以及客户端发现模型和传递 Key 的方式。</p>
+          <p class="editor-kicker">Access overview</p>
+          <h1>模型权限概览</h1>
+          <p class="editor-subtitle">API Key 的创建、删除和生命周期完全由 CPA 管理；此页面只为现有 Key 配置模型规则。</p>
         </div>
       </header>
       ${statusWarning}
+      ${staleWarning}
+      <section class="overview-grid" aria-label="权限统计">
+        ${statCard("当前 CPA Key", state.keys.length, "只读同步")}
+        ${statCard("已配置", configured, "含 allow 或 deny")}
+        ${statCard("默认允许", defaults, "没有模型规则")}
+        ${statCard("失效策略", staleCount, "保存时仍保留", staleCount > 0)}
+      </section>
       <section class="card">
-        <div class="card-head"><h2>默认访问行为</h2><p>每个 Key 的 allow 与 deny 规则会覆盖这里的默认值。</p></div>
-        <div class="setting-row">
-          <div class="setting-copy"><strong>未匹配模型</strong><span>推荐拒绝，只开放明确列出的模型。</span></div>
-          <div class="setting-control">${segment("default_action", policy.default_action, { value: "deny", label: "拒绝" }, { value: "allow", label: "允许" })}</div>
-        </div>
-        <div class="setting-row">
-          <div class="setting-copy"><strong>/v1/models 端点</strong><span>CPA 只能返回全局列表，无法按 Key 过滤。</span></div>
-          <div class="setting-control">${segment("models_endpoint", policy.models_endpoint, { value: "deny", label: "拒绝" }, { value: "allow", label: "允许" })}</div>
-        </div>
-        <div class="setting-row">
-          <div class="setting-copy"><strong>查询参数 Key</strong><span>接受 ?key= 和 ?auth_token=；Header 始终可用。</span></div>
-          <label class="toggle" aria-label="允许查询参数 Key"><input id="allowQueryKeys" type="checkbox" ${policy.allow_query_keys ? "checked" : ""}><span class="toggle-track"></span></label>
+        <div class="card-head"><h2>认证边界</h2><p>Key 身份与模型授权相互分离。</p></div>
+        <div class="info-callout">
+          <span class="callout-icon">${icons.key}</span>
+          <div><strong>认证由 CPA 内置 API Keys 管理</strong><p>插件仅接收 CPA 提供的 caller scope，并据此执行 allow_models 与 deny_models。未配置策略或规则为空时，默认允许全部模型。</p></div>
         </div>
       </section>
-      <div class="notice">${icons.warning}<span><strong>模型列表说明：</strong>即使允许 /v1/models，客户端看到的也是 CPA 全局模型列表；实际调用仍按每个 Key 的策略严格校验。</span></div>
       <section class="card">
         <div class="card-head"><h2>运行状态</h2><p>来自当前 CPA 插件实例。</p></div>
-        ${statusRow("插件版本", `v${state.status?.version || "—"}`)}
-        ${statusRow("RPC Schema", `${state.status?.host_schema_version || "—"} / 要求 ${state.status?.schema_version || 2}`)}
+        ${statusRow("认证模式", displayAuthMode(state.status?.auth_mode))}
+        ${statusRow("身份来源", state.status?.identity_source || "—")}
+        ${statusRow("未配置 Key", state.status?.unconfigured_key_action === "allow" ? "允许全部模型" : state.status?.unconfigured_key_action || "—")}
+        ${statusRow("后端策略数", state.status?.policy_count ?? "—")}
         ${statusRow("策略版本", `rev-${state.revision}`)}
         ${statusRow("策略来源", state.status?.source || "—")}
         ${statusRow("最后更新", formatDate(state.status?.updated_at))}
       </section>`;
+  }
+
+  function statCard(label, value, note, warning = false) {
+    return `<article class="stat-card ${warning ? "warning" : ""}"><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong><small>${escapeHTML(note)}</small></article>`;
+  }
+
+  function displayAuthMode(value) {
+    return value === "cpa_builtin_api_keys" ? "CPA 内置 API Keys" : value || "—";
   }
 
   function statusRow(label, value) {
@@ -304,51 +460,30 @@
   }
 
   function renderKeyEditor(key, index) {
-    const hasHash = Boolean(key.key_sha256);
+    const empty = !hasRules(key);
     editor.innerHTML = `
       <header class="editor-head">
         <div class="editor-title-wrap">
-          <p class="editor-kicker">API key policy</p>
-          <h1>${escapeHTML(key.id || "未命名 Key")}</h1>
-          <p class="editor-subtitle mono">${escapeHTML(fingerprint(key.key_sha256))}</p>
+          <p class="editor-kicker">Existing CPA key</p>
+          <h1>${escapeHTML(keyLabel(index))}</h1>
+          <p class="editor-subtitle key-summary"><span>${key.mask}</span><span class="mono">SHA-256 ${escapeHTML(key.fingerprint)}</span></p>
         </div>
-        <label class="toggle" aria-label="启用此 Key"><input id="keyEnabled" type="checkbox" ${key.enabled ? "checked" : ""}><span class="toggle-track"></span></label>
       </header>
+      ${empty ? `<div class="default-notice">${icons.check}<span><strong>当前默认允许全部模型。</strong>添加 allow 或 deny 规则后才会为此 Key 写入策略。</span></div>` : ""}
       <section class="card">
-        <div class="card-head"><h2>身份与凭据</h2><p>明文 Key 只会在当前页面内存中短暂存在，保存后服务端仅返回 SHA-256。</p></div>
-        <div class="form-grid">
-          <div class="form-field">
-            <label class="field-label" for="keyId">标识名称</label>
-            <input id="keyId" value="${escapeHTML(key.id)}" autocomplete="off" spellcheck="false" placeholder="例如 team-a">
-            <small>用于日志和管理，不会作为客户端凭据。</small>
-          </div>
-          <div class="form-field">
-            <label class="field-label" for="credential">${hasHash ? "替换 API Key" : "API Key"}</label>
-            <input id="credential" type="password" value="${escapeHTML(key._credential || "")}" autocomplete="new-password" spellcheck="false" placeholder="${hasHash ? "留空以保留当前 Key" : "输入新的客户端 Key"}">
-            <small>${hasHash ? `当前指纹：${escapeHTML(fingerprint(key.key_sha256))}` : "保存前必须设置凭据。"}</small>
-          </div>
-          ${hasHash ? `<div class="form-field full"><label class="field-label" for="keyHash">SHA-256</label><div class="input-action"><input id="keyHash" class="mono" value="${escapeHTML(key.key_sha256)}" readonly><button class="icon-button" type="button" data-action="copy-hash" aria-label="复制 SHA-256" title="复制 SHA-256">${icons.copy}</button></div></div>` : ""}
-        </div>
-      </section>
-      <section class="card">
-        <div class="card-head"><h2>模型规则</h2><p>deny 优先级高于 allow；支持 * 和 ? 通配符。</p></div>
-        ${tagEditor("allow_models", "允许模型", "命中后允许调用", key.allow_models, false)}
+        <div class="card-head"><h2>模型规则</h2><p>deny 优先于 allow；支持 * 和 ? 通配符。规则全部清空后恢复默认允许。</p></div>
+        ${tagEditor("allow_models", "允许模型", "有 allow 时，仅允许命中的模型", key.allow_models, false)}
         ${tagEditor("deny_models", "拒绝模型", "命中后始终拒绝", key.deny_models, true)}
       </section>
-      <section class="card">
-        <div class="danger-zone">
-          <div><strong>删除此 Key</strong><span>保存前可以撤销，保存后该凭据立即失效。</span></div>
-          <button class="button danger" type="button" data-action="delete-key">${icons.trash}<span>删除 Key</span></button>
-        </div>
-      </section>`;
+      <div class="privacy-note">页面仅保留由 CPA Key 计算出的 caller scope；原始 Key 不会写入 DOM、浏览器存储或 URL。</div>`;
     editor.dataset.keyIndex = String(index);
   }
 
   function tagEditor(kind, title, description, models, deny) {
     return `<div class="tag-editor">
       <div class="tag-head"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(description)}</span></div>
-      <div class="chips">${models.length ? models.map((model, modelIndex) => `<span class="chip ${deny ? "deny" : ""}">${escapeHTML(model)}<button class="chip-remove" type="button" data-action="remove-model" data-kind="${kind}" data-model-index="${modelIndex}" aria-label="移除 ${escapeHTML(model)}">${icons.close}</button></span>`).join("") : '<span class="empty-chips">暂无规则</span>'}</div>
-      <div class="tag-input-row"><input id="${kind}Input" class="mono" autocomplete="off" spellcheck="false" placeholder="输入模型或通配符，按 Enter"><button class="button secondary" type="button" data-action="add-model" data-kind="${kind}">添加</button></div>
+      <div class="chips">${models.length ? models.map((model, modelIndex) => `<span class="chip ${deny ? "deny" : ""}">${escapeHTML(model)}<button class="chip-remove" type="button" data-action="remove-model" data-kind="${kind}" data-model-index="${modelIndex}" aria-label="移除此模型规则">${icons.close}</button></span>`).join("") : '<span class="empty-chips">暂无规则</span>'}</div>
+      <div class="tag-input-row"><input id="${kind}Input" class="mono" autocomplete="off" spellcheck="false" placeholder="输入模型或通配符，按 Enter"><button class="button secondary" type="button" data-action="add-model" data-kind="${kind}">添加规则</button></div>
     </div>`;
   }
 
@@ -359,112 +494,87 @@
     return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
   }
 
-  function addKey() {
-    if (state.busy) return;
-    let number = state.policy.keys.length + 1;
-    let id = `key-${number}`;
-    const ids = new Set(state.policy.keys.map((key) => key.id));
-    while (ids.has(id)) id = `key-${++number}`;
-    state.policy.keys.push({ id, enabled: true, key_sha256: "", allow_models: [], deny_models: [], _credential: "" });
-    state.selection = { type: "key", index: state.policy.keys.length - 1 };
-    state.search = "";
-    $("#searchInput").value = "";
-    markDirty();
-    renderAll();
-    requestAnimationFrame(() => $("#credential")?.focus());
-  }
-
   function selectedKey() {
-    return state.selection.type === "key" ? state.policy.keys[state.selection.index] : null;
+    return state.selectedIndex >= 0 ? state.keys[state.selectedIndex] : null;
   }
 
   function addModels(kind) {
     if (state.busy) return;
     const key = selectedKey();
     const input = $(`#${kind}Input`);
-    if (!key || !input) return;
+    if (!key || !input || (kind !== "allow_models" && kind !== "deny_models")) return;
     const additions = input.value.split(/[\n,]/).map((value) => value.trim()).filter(Boolean);
     if (!additions.length) return;
-    const existing = new Set(key[kind]);
-    additions.forEach((model) => existing.add(model));
-    key[kind] = [...existing];
+    key[kind] = [...new Set([...key[kind], ...additions])];
     markDirty();
     renderEditor();
     requestAnimationFrame(() => $(`#${kind}Input`)?.focus());
   }
 
-  function deleteKey() {
-    if (state.busy) return;
-    const index = state.selection.index;
-    const removed = state.policy.keys.splice(index, 1)[0];
-    if (!removed) return;
-    state.selection = { type: "global", index: -1 };
-    markDirty();
-    renderAll();
-    showToast(`已移除 ${removed.id || "未命名 Key"}`, "success", "撤销", () => {
-      state.policy.keys.splice(Math.min(index, state.policy.keys.length), 0, removed);
-      state.selection = { type: "key", index: Math.min(index, state.policy.keys.length - 1) };
-      markDirty();
-      renderAll();
-    });
-  }
-
-  function validatePolicy() {
-    const ids = new Set();
-    for (const [index, key] of state.policy.keys.entries()) {
-      key.id = key.id.trim();
-      if (!key.id) return `第 ${index + 1} 个 Key 缺少标识名称。`;
-      if (ids.has(key.id)) return `标识名称“${key.id}”重复。`;
-      ids.add(key.id);
-      if (!key.key_sha256 && !key._credential?.trim()) return `Key“${key.id}”尚未设置客户端凭据。`;
-    }
-    return "";
-  }
-
   function serializablePolicy() {
-    return {
-      version: 1,
-      default_action: state.policy.default_action,
-      models_endpoint: state.policy.models_endpoint,
-      allow_query_keys: state.policy.allow_query_keys,
-      keys: state.policy.keys.map((key) => {
-        const output = {
-          id: key.id.trim(),
-          enabled: key.enabled !== false,
-          allow_models: [...key.allow_models],
-          deny_models: [...key.deny_models]
-        };
-        if (key._credential?.trim()) output.key = key._credential.trim();
-        else output.key_sha256 = key.key_sha256;
-        return output;
-      })
-    };
+    const active = state.keys.filter(hasRules).map((key) => ({
+      caller_scope: key.scope,
+      allow_models: [...key.allow_models],
+      deny_models: [...key.deny_models]
+    }));
+    const stale = state.stalePolicies.map((policy) => ({
+      caller_scope: policy.caller_scope,
+      allow_models: [...policy.allow_models],
+      deny_models: [...policy.deny_models]
+    }));
+    return { version: 2, policies: [...active, ...stale] };
+  }
+
+  function scopeSet(keys) {
+    return new Set(keys.map((key) => key.scope));
+  }
+
+  function setsEqual(left, right) {
+    if (left.size !== right.size) return false;
+    for (const value of left) if (!right.has(value)) return false;
+    return true;
   }
 
   async function save() {
     if (!state.dirty || state.busy) return;
-    const validationError = validatePolicy();
-    if (validationError) {
-      showToast(validationError, "error");
-      return;
-    }
     const expectedRevision = state.revision;
     const submittedPolicy = serializablePolicy();
     setBusy(true, "save");
     try {
+      const latestKeys = await fetchCurrentKeys();
+      if (!setsEqual(scopeSet(state.keys), scopeSet(latestKeys))) {
+        const changed = new Error("CPA API Key 列表已变化；为避免策略错配，保存已中止。请刷新数据后重新检查规则。");
+        changed.code = "key_set_changed";
+        throw changed;
+      }
+
       const response = await api(PATHS.policies, {
         method: "PUT",
         headers: { "If-Match": `"rev-${expectedRevision}"` },
         body: JSON.stringify(submittedPolicy)
       });
-      state.policy = normalizePolicy(response.policy);
-      state.revision = Number(response.revision ?? expectedRevision + 1);
-      state.dirty = false;
-      if (state.selection.type === "key" && !state.policy.keys[state.selection.index]) state.selection = { type: "global", index: -1 };
-      renderAll();
-      showToast(response.persistent ? "策略已保存并持久化" : "策略已保存到内存", "success");
+      let keySetChangedAfterSave = false;
+      let postSaveCheckError = null;
       try {
-        state.status = await api(PATHS.status);
+        const keysAfterSave = await fetchCurrentKeys();
+        keySetChangedAfterSave = !setsEqual(scopeSet(state.keys), scopeSet(keysAfterSave));
+        if (keySetChangedAfterSave) state.keys = keysAfterSave;
+      } catch (verificationError) {
+        postSaveCheckError = verificationError;
+      }
+      applyPolicyDocument(response?.policy || submittedPolicy);
+      state.revision = Number(response?.revision ?? expectedRevision + 1);
+      state.dirty = false;
+      renderAll();
+      if (keySetChangedAfterSave) {
+        showToast("策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 当前默认允许全部模型，请立即检查。", "error");
+      } else if (postSaveCheckError) {
+        showToast(`策略已保存，但无法复核 CPA Key 列表：${postSaveCheckError.message}`, "error");
+      } else {
+        showToast(response?.persistent ? "策略已保存并持久化" : "策略已保存到内存", "success");
+      }
+      try {
+        state.status = await api(PATHS.status, { method: "GET" });
         syncHeader();
         syncPersistence();
       } catch (refreshError) {
@@ -473,10 +583,11 @@
     } catch (error) {
       if (error.code === "timeout") {
         const confirmed = await confirmTimedOutSave(submittedPolicy, expectedRevision);
-        if (confirmed) showToast("保存响应超时，但已重新读取并确认提交成功", "success");
-        else showToast("保存结果无法确认；本地修改已保留，请重新加载后核对。", "error");
+        showToast(confirmed ? "保存响应超时，但已重新读取并确认提交成功" : "保存结果无法确认；本地修改已保留，请刷新后核对。", confirmed ? "success" : "error");
+      } else if (error.code === "key_set_changed") {
+        showToast(error.message, "error", "刷新数据", refreshData);
       } else if (error.status === 412) {
-        showToast("策略已被其他管理员或配置重载修改。请先重新加载再保存。", "error");
+        showToast("策略已被其他管理员或配置重载修改。请刷新数据后再保存。", "error", "刷新数据", refreshData);
       } else {
         showToast(error.message, "error");
       }
@@ -488,13 +599,13 @@
 
   async function confirmTimedOutSave(submittedPolicy, expectedRevision) {
     try {
-      const policies = await api(PATHS.policies);
-      const remoteRevision = Number(policies.revision ?? 0);
-      if (remoteRevision <= expectedRevision || !(await policiesEquivalent(submittedPolicy, policies.policy))) return false;
-      state.policy = normalizePolicy(policies.policy);
+      const policies = await api(PATHS.policies, { method: "GET" });
+      const remoteRevision = Number(policies?.revision ?? 0);
+      if (remoteRevision <= expectedRevision || !policiesEquivalent(submittedPolicy, policies?.policy)) return false;
+      applyPolicyDocument(policies.policy);
       state.revision = remoteRevision;
       state.dirty = false;
-      try { state.status = await api(PATHS.status); } catch (_) { /* policy confirmation is sufficient */ }
+      try { state.status = await api(PATHS.status, { method: "GET" }); } catch (_) { /* policy confirmation is sufficient */ }
       renderAll();
       return true;
     } catch (_) {
@@ -502,41 +613,44 @@
     }
   }
 
-  async function policiesEquivalent(submitted, remoteRaw) {
-    const remote = normalizePolicy(remoteRaw);
-    if (submitted.default_action !== remote.default_action || submitted.models_endpoint !== remote.models_endpoint || submitted.allow_query_keys !== remote.allow_query_keys || submitted.keys.length !== remote.keys.length) return false;
-    for (let index = 0; index < submitted.keys.length; index += 1) {
-      const left = submitted.keys[index];
-      const right = remote.keys[index];
-      const expectedHash = left.key ? await sha256Hex(left.key) : left.key_sha256;
-      if (left.id !== right.id || left.enabled !== right.enabled || expectedHash !== right.key_sha256) return false;
-      if (JSON.stringify([...left.allow_models].sort()) !== JSON.stringify([...right.allow_models].sort())) return false;
-      if (JSON.stringify([...left.deny_models].sort()) !== JSON.stringify([...right.deny_models].sort())) return false;
-    }
-    return true;
+  function policiesEquivalent(leftRaw, rightRaw) {
+    const canonical = (raw) => normalizePolicyDocument(raw).policies.map((policy) => ({
+      caller_scope: policy.caller_scope,
+      allow_models: [...policy.allow_models].sort(),
+      deny_models: [...policy.deny_models].sort()
+    })).sort((left, right) => left.caller_scope.localeCompare(right.caller_scope));
+    return JSON.stringify(canonical(leftRaw)) === JSON.stringify(canonical(rightRaw));
   }
 
-  async function sha256Hex(value) {
-    const bytes = new TextEncoder().encode(value.trim());
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  async function refreshData() {
+    if (state.busy) return;
+    if (state.dirty && !window.confirm("刷新会放弃尚未保存的模型规则。是否继续？")) return;
+    const preferredScope = selectedKey()?.scope || "";
+    setBusy(true, "refresh");
+    try {
+      const remote = await fetchRemoteData();
+      installRemoteData(remote, preferredScope);
+      renderAll();
+      showToast("已刷新 CPA Key 与策略", "success");
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setBusy(false);
+      syncHeader();
+    }
   }
 
   async function reload() {
     if (state.busy || !state.status?.persistent_updates) return;
-    if (state.dirty && !window.confirm("从策略文件重载会放弃尚未保存的修改。是否继续？")) return;
+    if (state.dirty && !window.confirm("从策略文件重载会放弃尚未保存的模型规则。是否继续？")) return;
+    const preferredScope = selectedKey()?.scope || "";
     setBusy(true, "reload");
     let reloaded = false;
     try {
-      const response = await api(PATHS.reload, { method: "POST" });
+      await api(PATHS.reload, { method: "POST" });
       reloaded = true;
-      state.revision = Number(response.revision ?? state.revision + 1);
-      state.dirty = false;
-      const policies = await api(PATHS.policies);
-      state.status = await api(PATHS.status);
-      state.policy = normalizePolicy(policies.policy);
-      state.revision = Number(policies.revision ?? state.revision);
-      state.selection = { type: "global", index: -1 };
+      const remote = await fetchRemoteData();
+      installRemoteData(remote, preferredScope);
       renderAll();
       showToast("已从策略文件重载", "success");
     } catch (error) {
@@ -553,26 +667,13 @@
     toast.innerHTML = `${type === "error" ? icons.warning : icons.check}<span>${escapeHTML(message)}</span>${actionLabel ? `<button type="button">${escapeHTML(actionLabel)}</button>` : ""}`;
     $("#toastRegion").appendChild(toast);
     const button = toast.querySelector("button");
-    let timer = window.setTimeout(remove, actionLabel ? 6000 : 3600);
+    let timer = window.setTimeout(remove, actionLabel ? 7000 : 3600);
     if (button) button.addEventListener("click", () => { window.clearTimeout(timer); action?.(); remove(); });
     requestAnimationFrame(() => toast.classList.remove("enter"));
     function remove() {
       if (!toast.isConnected) return;
       toast.classList.add("exit");
       window.setTimeout(() => toast.remove(), 190);
-    }
-  }
-
-  async function copyHash() {
-    const key = selectedKey();
-    if (!key?.key_sha256) return;
-    try {
-      await navigator.clipboard.writeText(key.key_sha256);
-      showToast("SHA-256 已复制", "success");
-    } catch (_) {
-      const input = $("#keyHash");
-      input?.select();
-      showToast("请使用系统复制命令", "error");
     }
   }
 
@@ -585,10 +686,10 @@
 
   function initializeChrome() {
     $("#toggleSecret").innerHTML = icons.eye;
-    $("#addKeyButton").innerHTML = icons.plus;
     $("#searchIcon").innerHTML = icons.search;
-    $("#reloadButton").innerHTML = `${icons.refresh}<span class="label-long">从文件重载</span>`;
-    $("#saveButton").innerHTML = `${icons.save}<span class="label-long">已保存</span>`;
+    refreshDataButton.innerHTML = icons.refresh;
+    reloadButton.innerHTML = `${icons.file}<span class="label-long">从文件重载</span>`;
+    saveButton.innerHTML = `${icons.save}<span class="label-long">已保存</span>`;
     $("#disconnectButton").innerHTML = icons.logout;
     const stored = localStorage.getItem("key-model-access-theme");
     const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -610,7 +711,7 @@
 
   $("#themeButton").addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
   $("#disconnectButton").addEventListener("click", disconnect);
-  $("#addKeyButton").addEventListener("click", addKey);
+  refreshDataButton.addEventListener("click", refreshData);
   saveButton.addEventListener("click", save);
   reloadButton.addEventListener("click", reload);
   $("#searchInput").addEventListener("input", (event) => { state.search = event.target.value; scheduleNavRender(); });
@@ -619,9 +720,7 @@
     if (state.busy) return;
     const item = event.target.closest("[data-select]");
     if (!item) return;
-    state.selection = item.dataset.select === "global"
-      ? { type: "global", index: -1 }
-      : { type: "key", index: Number(item.dataset.index) };
+    state.selectedIndex = item.dataset.select === "overview" ? -1 : Number(item.dataset.index);
     renderNav();
     renderEditor();
   });
@@ -630,51 +729,15 @@
     if (state.busy) return;
     const target = event.target.closest("button");
     if (!target) return;
-    if (target.dataset.setting) {
-      state.policy[target.dataset.setting] = target.dataset.value;
-      markDirty();
-      renderEditor();
-      renderNav();
-      return;
-    }
     const action = target.dataset.action;
     if (action === "add-model") addModels(target.dataset.kind);
     else if (action === "remove-model") {
       const key = selectedKey();
-      if (!key) return;
-      key[target.dataset.kind].splice(Number(target.dataset.modelIndex), 1);
+      const kind = target.dataset.kind;
+      if (!key || (kind !== "allow_models" && kind !== "deny_models")) return;
+      key[kind].splice(Number(target.dataset.modelIndex), 1);
       markDirty();
       renderEditor();
-    } else if (action === "delete-key") deleteKey();
-    else if (action === "copy-hash") copyHash();
-  });
-
-  editor.addEventListener("input", (event) => {
-    if (state.busy) return;
-    const key = selectedKey();
-    if (!key) return;
-    if (event.target.id === "keyId") {
-      key.id = event.target.value;
-      markDirty();
-      scheduleNavRender();
-      editor.querySelector("h1").textContent = key.id || "未命名 Key";
-    } else if (event.target.id === "credential") {
-      key._credential = event.target.value;
-      markDirty();
-    }
-  });
-
-  editor.addEventListener("change", (event) => {
-    if (state.busy) return;
-    if (event.target.id === "allowQueryKeys") {
-      state.policy.allow_query_keys = event.target.checked;
-      markDirty();
-    } else if (event.target.id === "keyEnabled") {
-      const key = selectedKey();
-      if (!key) return;
-      key.enabled = event.target.checked;
-      markDirty();
-      renderNav();
     }
   });
 
