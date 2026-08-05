@@ -1,0 +1,24 @@
+# Merge this block into CLIProxyAPI's config.yaml.
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    key-model-access:
+      enabled: true
+      # Highest-priority exclusive frontend auth plugin wins.
+      priority: 100
+
+      # Relative paths resolve from CLIProxyAPI's working directory.
+      # Set this to make Management API changes persistent.
+      policy_file: "config/key-model-access-policies.yaml"
+
+      # Used only until policy_file exists. Thereafter the file is authoritative.
+      default_action: deny
+      models_endpoint: allow
+      allow_query_keys: true
+      keys:
+        - id: bootstrap-admin
+          # For first boot only. Prefer key_sha256 in production.
+          key: "replace-with-a-real-api-key"
+          allow_models:
+            - "*"

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="CPA Key Model Access 设置">
+  <title>模型权限 · CPA</title>
+  <style nonce="{{NONCE}}">{{CSS}}</style>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"></div>
+
+  <main id="authGate" class="auth-shell">
+    <section class="auth-card" aria-labelledby="authTitle">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M7.75 10.25V7.5a4.25 4.25 0 0 1 8.5 0v2.75M6.5 10.25h11a1.5 1.5 0 0 1 1.5 1.5v6.75a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 18.5v-6.75a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M12 14v2.25"/></svg>
+      </div>
+      <p class="eyebrow">KEY MODEL ACCESS</p>
+      <h1 id="authTitle">管理模型权限</h1>
+      <p class="auth-copy">输入 CPA Management Key 以加载策略。密钥仅保存在当前页面内存中，刷新后会清除。</p>
+      <form id="authForm" class="auth-form" method="post" autocomplete="off">
+        <label for="managementKey">Management Key</label>
+        <div class="secret-field">
+          <input id="managementKey" type="password" autocomplete="off" spellcheck="false" placeholder="输入管理密钥" required>
+          <button id="toggleSecret" class="icon-button inset" type="button" aria-label="显示密钥" title="显示密钥"></button>
+        </div>
+        <p id="authError" class="field-error" role="alert" aria-live="polite"></p>
+        <button id="connectButton" class="button primary wide" type="submit"><span>连接到 CPA</span></button>
+      </form>
+      <div class="security-note">
+        <span class="status-dot neutral" aria-hidden="true"></span>
+        <span>页面本身不包含策略数据，所有读取和保存操作均由受保护的 Management API 完成。</span>
+      </div>
+    </section>
+  </main>
+
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark small" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M7.75 10.25V7.5a4.25 4.25 0 0 1 8.5 0v2.75M6.5 10.25h11a1.5 1.5 0 0 1 1.5 1.5v6.75a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 18.5v-6.75a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M12 14v2.25"/></svg>
+        </div>
+        <div>
+          <strong>模型权限</strong>
+          <span>Key Model Access</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <div id="healthBadge" class="health-badge"><span class="status-dot"></span><span>正在连接</span></div>
+        <button id="reloadButton" class="button secondary compact" type="button" aria-label="从策略文件重载" title="从策略文件重载"></button>
+        <button id="saveButton" class="button primary compact" type="button" aria-label="保存修改" title="保存修改" disabled></button>
+        <div class="separator" aria-hidden="true"></div>
+        <button id="themeButton" class="icon-button" type="button" aria-label="切换主题" title="切换主题"></button>
+        <button id="disconnectButton" class="icon-button" type="button" aria-label="断开连接" title="断开连接"></button>
+      </div>
+    </header>
+
+    <div id="workspace" class="workspace">
+      <aside class="sidebar" aria-label="策略导航">
+        <div class="sidebar-head">
+          <div>
+            <p class="section-label">访问策略</p>
+            <p id="policyCount" class="sidebar-count">0 个 Key</p>
+          </div>
+          <button id="addKeyButton" class="icon-button add" type="button" aria-label="添加 API Key" title="添加 API Key"></button>
+        </div>
+        <div class="search-field">
+          <span id="searchIcon" aria-hidden="true"></span>
+          <input id="searchInput" type="search" placeholder="搜索 Key" autocomplete="off" aria-label="搜索 Key">
+        </div>
+        <nav id="policyNav" class="policy-nav"></nav>
+        <div id="persistenceNotice" class="persistence-notice"></div>
+      </aside>
+
+      <section id="editor" class="editor" aria-live="polite"></section>
+    </div>
+  </div>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script nonce="{{NONCE}}">{{JS}}</script>
+</body>
+</html>
