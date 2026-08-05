@@ -38,8 +38,17 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 	for _, expected := range []string{
 		"id=\"authGate\"",
 		"id=\"policyNav\"",
+		"class=\"commandbar\"",
+		"is-embedded",
 		"const PATHS",
 		"/v0/management/api-keys",
+		"/v1/models",
+		"cli-proxy-auth",
+		"cli-proxy-theme",
+		"class=\"model-trigger",
+		"<progress class=\"selection-meter\"",
+		"state.pendingDraft = serializablePolicy()",
+		"const commonWildcards",
 		"cli-proxy-api:caller-scope:v1\\0",
 		":root",
 	} {
@@ -54,6 +63,9 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"default_action",
 		"models_endpoint",
 		"allow_query_keys",
+		"id=\"managementKey\"",
+		"id=\"authForm\"",
+		"style=\"",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("settings page contains removed key-management UI or logic %q", forbidden)
@@ -61,6 +73,9 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 	}
 	if strings.Count(body, "api(PATHS.apiKeys") != 1 || !strings.Contains(body, `api(PATHS.apiKeys, { method: "GET" })`) {
 		t.Fatal("settings page must access CPA API keys through one read-only GET call")
+	}
+	if strings.Contains(body, "localStorage.setItem(CPAMC_AUTH_KEY") {
+		t.Fatal("settings page must never copy the CPAMC Management Key into local storage")
 	}
 	for _, writeMethod := range []string{`method: "PUT"`, `method: "PATCH"`, `method: "DELETE"`} {
 		apiKeyWrite := regexp.MustCompile(`(?s)api\(PATHS\.apiKeys.{0,160}` + regexp.QuoteMeta(writeMethod))

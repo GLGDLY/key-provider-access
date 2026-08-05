@@ -12,7 +12,7 @@ const (
 	pluginID             = "key-model-access"
 )
 
-var pluginVersion = "0.1.0"
+var pluginVersion = "0.1.1"
 
 const (
 	methodPluginRegister         = "plugin.register"

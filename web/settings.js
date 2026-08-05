@@ -5,21 +5,22 @@
     status: "/v0/management/plugins/key-model-access/status",
     policies: "/v0/management/plugins/key-model-access/policies",
     reload: "/v0/management/plugins/key-model-access/reload",
-    apiKeys: "/v0/management/api-keys"
+    apiKeys: "/v0/management/api-keys",
+    models: "/v1/models"
   };
 
+  const CPAMC_AUTH_KEY = "cli-proxy-auth";
+  const CPAMC_THEME_KEY = "cli-proxy-theme";
+  const OBFUSCATION_PREFIX = "enc::v1::";
+  const OBFUSCATION_SALT = "cli-proxy-api-webui::secure-storage";
+
   const icons = {
-    eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>',
-    eyeOff: '<svg viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 6.1A10.5 10.5 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-2.1 2.8M6.2 6.2C3.8 8 2.5 12 2.5 12s3.5 6 9.5 6c1.2 0 2.3-.2 3.3-.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
     search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>',
     overview: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>',
     key: '<svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M15 12v2"/></svg>',
     refresh: '<svg viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5"/><path d="M6.1 8.2A7 7 0 0 1 18.8 9M17.9 15.8A7 7 0 0 1 5.2 15"/></svg>',
     file: '<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>',
     save: '<svg viewBox="0 0 24 24"><path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4M8 20v-6h8v6"/></svg>',
-    sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
-    moon: '<svg viewBox="0 0 24 24"><path d="M20 15.2A8 8 0 0 1 8.8 4 8.2 8.2 0 1 0 20 15.2Z"/></svg>',
-    logout: '<svg viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>',
     warning: '<svg viewBox="0 0 24 24"><path d="M12 3 2.8 19h18.4L12 3Z"/><path d="M12 9v4M12 16.5h.01"/></svg>',
     check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>',
@@ -30,12 +31,22 @@
     token: "",
     status: null,
     keys: [],
+    models: [],
+    modelsError: "",
     stalePolicies: [],
     revision: 0,
     selectedIndex: -1,
     dirty: false,
     busy: false,
-    search: ""
+    modelBusy: false,
+    sessionBusy: false,
+    sessionEnded: false,
+    pendingDraft: null,
+    pendingScope: "",
+    search: "",
+    openPicker: "",
+    pickerQuery: "",
+    pickerScroll: 0
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -55,9 +66,50 @@
     })[character]);
   }
 
+  // Mirrors CPAMC secureStorage v1. This is reversible obfuscation for session
+  // compatibility, not cryptography and not a new security boundary.
+  function decodeStoredValue(raw) {
+    if (!raw || !raw.startsWith(OBFUSCATION_PREFIX)) return raw;
+    const encoded = atob(raw.slice(OBFUSCATION_PREFIX.length));
+    const encrypted = Uint8Array.from(encoded, (character) => character.charCodeAt(0));
+    const key = new TextEncoder().encode(`${OBFUSCATION_SALT}|${window.location.host}|${navigator.userAgent}`);
+    const decoded = new Uint8Array(encrypted.length);
+    for (let index = 0; index < encrypted.length; index += 1) decoded[index] = encrypted[index] ^ key[index % key.length];
+    return new TextDecoder().decode(decoded);
+  }
+
+  function readStoredValue(name) {
+    try {
+      const raw = localStorage.getItem(name);
+      if (raw === null) return null;
+      const decoded = decodeStoredValue(raw);
+      try { return JSON.parse(decoded); } catch (_) { return decoded; }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readCPAMCManagementKey() {
+    try {
+      if (localStorage.getItem("isLoggedIn") !== "true") return "";
+      const persisted = readStoredValue(CPAMC_AUTH_KEY);
+      const current = persisted && typeof persisted === "object" ? persisted.state?.managementKey : "";
+      if (typeof current === "string" && current.trim()) return current.trim();
+      const legacy = readStoredValue("managementKey");
+      return typeof legacy === "string" ? legacy.trim() : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   function normalizeModels(value) {
     if (!Array.isArray(value)) return [];
     return [...new Set(value.map((model) => String(model).trim()).filter(Boolean))];
+  }
+
+  function modelPatternMatches(pattern, model) {
+    const source = String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    try { return new RegExp(`^${source}$`).test(model); } catch (_) { return false; }
   }
 
   function normalizePolicyDocument(raw) {
@@ -197,7 +249,45 @@
     return stateWords.map((word) => word.toString(16).padStart(8, "0")).join("");
   }
 
-  async function fetchCurrentKeys() {
+  async function fetchModelCatalog(apiKey) {
+    if (!apiKey) return { models: [], error: "CPA 当前没有可用于读取模型目录的 API Key。" };
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(PATHS.models, {
+        method: "GET",
+        headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+        cache: "no-store"
+      });
+      let payload = null;
+      try { payload = await response.json(); } catch (_) { payload = null; }
+      if (!response.ok) throw new Error(`模型目录请求失败（HTTP ${response.status}）`);
+      const source = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+      const seen = new Set();
+      const models = source.map((item) => {
+        if (typeof item === "string") return { id: item, displayName: "" };
+        if (!item || typeof item !== "object") return null;
+        const id = String(item.id ?? item.name ?? item.model ?? item.value ?? "").trim();
+        const displayName = String(item.display_name ?? item.displayName ?? item.alias ?? "").trim();
+        return id ? { id, displayName: displayName === id ? "" : displayName } : null;
+      }).filter((item) => {
+        if (!item) return false;
+        const key = item.id.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).sort((left, right) => left.id.localeCompare(right.id));
+      return { models, error: models.length ? "" : "CPA 的 /v1/models 暂未返回可用模型。" };
+    } catch (error) {
+      const message = error.name === "AbortError" ? "模型目录加载超时。" : error.message;
+      return { models: [], error: message || "模型目录加载失败。" };
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  async function fetchCurrentKeys(options = {}) {
     const payload = await api(PATHS.apiKeys, { method: "GET" });
     const values = Array.isArray(payload?.["api-keys"]) ? payload["api-keys"] : null;
     if (!values) throw new Error("CPA 返回了无法识别的 API Key 列表。");
@@ -205,11 +295,12 @@
     const temporaryValues = values.slice();
     const normalizedValues = temporaryValues.map((value) => String(value).trim()).filter(Boolean);
     try {
-      const scopes = await Promise.all(normalizedValues.map((value) =>
-        sha256Hex(`cli-proxy-api:caller-scope:v1\0${value}`)
-      ));
+      const [scopes, catalog] = await Promise.all([
+        Promise.all(normalizedValues.map((value) => sha256Hex(`cli-proxy-api:caller-scope:v1\0${value}`))),
+        options.includeCatalog ? fetchModelCatalog(normalizedValues[0] || "") : Promise.resolve(null)
+      ]);
       const seen = new Set();
-      return scopes.filter((scope) => {
+      const keys = scopes.filter((scope) => {
         if (seen.has(scope)) return false;
         seen.add(scope);
         return true;
@@ -220,6 +311,7 @@
         allow_models: [],
         deny_models: []
       }));
+      return options.includeCatalog ? { keys, catalog } : keys;
     } finally {
       normalizedValues.fill("");
       temporaryValues.fill("");
@@ -230,11 +322,11 @@
   async function fetchRemoteData() {
     // Verify Management authentication once before issuing the remaining reads.
     const status = await api(PATHS.status, { method: "GET" });
-    const [policies, keys] = await Promise.all([
+    const [policies, keyData] = await Promise.all([
       api(PATHS.policies, { method: "GET" }),
-      fetchCurrentKeys()
+      fetchCurrentKeys({ includeCatalog: true })
     ]);
-    return { status, policies, keys };
+    return { status, policies, keys: keyData.keys, catalog: keyData.catalog };
   }
 
   function applyPolicyDocument(rawDocument) {
@@ -258,62 +350,89 @@
   function installRemoteData(remote, preferredScope = "") {
     state.status = remote.status;
     state.keys = remote.keys;
+    state.models = remote.catalog?.models || [];
+    state.modelsError = remote.catalog?.error || "";
     applyPolicyDocument(remote.policies?.policy);
     state.revision = Number(remote.policies?.revision ?? remote.status?.revision ?? 0);
     state.dirty = false;
+    state.openPicker = "";
+    state.pickerQuery = "";
+    state.pickerScroll = 0;
     state.selectedIndex = preferredScope ? state.keys.findIndex((key) => key.scope === preferredScope) : -1;
   }
 
-  async function connect(token) {
-    state.token = token.trim();
-    if (!state.token) return;
-    setAuthBusy(true);
-    $("#authError").textContent = "";
+  function setSessionState(kind, title, message) {
+    $("#authTitle").textContent = title;
+    $("#authMessage").textContent = message;
+    $("#sessionIcon").classList.toggle("error", kind === "error");
+    $("#sessionIcon").innerHTML = kind === "loading" ? icons.spinner : kind === "error" ? icons.warning : icons.check;
+    $("#retrySessionButton").hidden = kind !== "error";
+  }
+
+  async function connectFromCPAMC() {
+    if (state.sessionBusy) return;
+    const token = readCPAMCManagementKey();
+    if (!token) {
+      state.token = "";
+      setSessionState("error", "未找到可复用的 CPAMC 会话", "自动接入要求 CPAMC 与 CPA 同源，并在登录时启用“记住密码”。请确认后返回此页面重试；插件不会要求你再次输入 Management Key。");
+      return;
+    }
+    state.token = token;
+    state.sessionBusy = true;
+    setSessionState("loading", "正在接入管理会话", "正在验证 CPAMC 已保存的连接信息并加载模型策略…");
     try {
       const remote = await fetchRemoteData();
-      installRemoteData(remote);
-      $("#managementKey").value = "";
+      const pendingDraft = state.pendingDraft;
+      const pendingScope = state.pendingScope;
+      installRemoteData(remote, pendingScope);
+      if (pendingDraft) {
+        applyPolicyDocument(pendingDraft);
+        state.dirty = true;
+        state.pendingDraft = null;
+        state.pendingScope = "";
+      }
+      state.sessionEnded = false;
       authGate.hidden = true;
       app.hidden = false;
       renderAll();
-      showToast("已安全连接到 CPA", "success");
     } catch (error) {
       state.token = "";
-      $("#authError").textContent = error.status === 401 ? "Management Key 无效，请重新输入。" : error.message;
-      $("#managementKey").focus();
+      const message = error.status === 401
+        ? "CPAMC 保存的 Management Key 已失效。请返回 CPAMC 重新登录并启用“记住密码”。"
+        : `无法连接 CPA：${error.message}`;
+      setSessionState("error", "管理会话不可用", message);
     } finally {
-      setAuthBusy(false);
+      state.sessionBusy = false;
     }
   }
 
-  function disconnect() {
-    if (state.dirty && !window.confirm("有尚未保存的模型规则。确定断开并放弃这些修改吗？")) return;
+  function finalizeEndedSession() {
+    if (!state.sessionEnded || state.busy || state.modelBusy) return;
+    const hadDraft = state.dirty;
+    if (hadDraft) {
+      state.pendingDraft = serializablePolicy();
+      state.pendingScope = selectedKey()?.scope || "";
+    }
     state.token = "";
     state.status = null;
     state.keys = [];
+    state.models = [];
     state.stalePolicies = [];
-    state.revision = 0;
-    state.selectedIndex = -1;
     state.dirty = false;
-    $("#managementKey").value = "";
+    state.sessionEnded = false;
     app.hidden = true;
     authGate.hidden = false;
-    $("#managementKey").focus();
-  }
-
-  function setAuthBusy(busy) {
-    const button = $("#connectButton");
-    button.disabled = busy;
-    button.innerHTML = busy ? `${icons.spinner}<span>正在验证</span>` : "<span>连接到 CPA</span>";
+    setSessionState("error", "CPAMC 会话已结束", hadDraft
+      ? "未保存的策略草稿已保留在当前页面内存中。请重新登录；会话恢复后草稿会自动还原。"
+      : "请先在 CPAMC 重新登录并启用“记住密码”，页面会自动重新接入。");
   }
 
   function setBusy(busy, action = "") {
     state.busy = busy;
     $("#workspace").inert = busy;
-    $("#disconnectButton").disabled = busy;
-    refreshDataButton.disabled = busy;
-    saveButton.disabled = busy || !state.dirty;
-    reloadButton.disabled = busy || !state.status?.persistent_updates;
+    refreshDataButton.disabled = busy || state.modelBusy;
+    saveButton.disabled = busy || state.modelBusy || !state.dirty;
+    reloadButton.disabled = busy || state.modelBusy || !state.status?.persistent_updates;
     saveButton.innerHTML = action === "save" && busy
       ? `${icons.spinner}<span class="label-long">正在保存</span>`
       : `${icons.save}<span class="label-long">${state.dirty ? "保存修改" : "已保存"}</span>`;
@@ -323,6 +442,7 @@
     refreshDataButton.innerHTML = action === "refresh" && busy
       ? icons.spinner
       : icons.refresh;
+    if (!busy) finalizeEndedSession();
   }
 
   function markDirty() {
@@ -342,8 +462,8 @@
     const warning = state.status?.last_error;
     healthBadge.innerHTML = `<span class="status-dot ${warning ? "warning" : healthy ? "" : "error"}"></span><span>${escapeHTML(warning ? "策略警告" : healthy ? `Schema v${state.status.schema_version || 2}` : "未连接")}</span>`;
     healthBadge.title = warning ? state.status.last_error : "插件运行正常";
-    saveButton.disabled = state.busy || !state.dirty;
-    reloadButton.disabled = state.busy || !state.status?.persistent_updates;
+    saveButton.disabled = state.busy || state.modelBusy || !state.dirty;
+    reloadButton.disabled = state.busy || state.modelBusy || !state.status?.persistent_updates;
     reloadButton.title = state.status?.persistent_updates ? "从策略文件重载" : "未配置 policy_file，无法从文件重载";
     saveButton.innerHTML = `${icons.save}<span class="label-long">${state.dirty ? "保存修改" : "已保存"}</span>`;
     $("#policyCount").textContent = `${state.keys.length} 个当前 Key`;
@@ -469,21 +589,77 @@
           <p class="editor-subtitle key-summary"><span>${key.mask}</span><span class="mono">SHA-256 ${escapeHTML(key.fingerprint)}</span></p>
         </div>
       </header>
-      ${empty ? `<div class="default-notice">${icons.check}<span><strong>当前默认允许全部模型。</strong>添加 allow 或 deny 规则后才会为此 Key 写入策略。</span></div>` : ""}
-      <section class="card">
-        <div class="card-head"><h2>模型规则</h2><p>deny 优先于 allow；支持 * 和 ? 通配符。规则全部清空后恢复默认允许。</p></div>
-        ${tagEditor("allow_models", "允许模型", "有 allow 时，仅允许命中的模型", key.allow_models, false)}
-        ${tagEditor("deny_models", "拒绝模型", "命中后始终拒绝", key.deny_models, true)}
+      ${empty ? `<div class="default-notice">${icons.check}<span><strong>当前默认允许全部模型。</strong>从目录中选择允许或拒绝模型后才会为此 Key 写入策略。</span></div>` : ""}
+      <section class="card rules-card">
+        <div class="card-head"><h2>模型规则</h2><p>直接从 CPA 可用模型目录中选择；拒绝规则始终优先于允许规则。</p></div>
+        ${modelPicker("allow_models", "允许模型", "设置后，仅允许列表中的模型", key.allow_models, false)}
+        ${modelPicker("deny_models", "拒绝模型", "命中后始终拒绝访问", key.deny_models, true)}
       </section>
-      <div class="privacy-note">页面仅保留由 CPA Key 计算出的 caller scope；原始 Key 不会写入 DOM、浏览器存储或 URL。</div>`;
+      <div class="privacy-note">Management Key 复用 CPAMC 已保存的同源会话；CPA API Key 只用于计算 caller scope 与读取模型目录，不会写入 DOM、浏览器存储或 URL。</div>`;
     editor.dataset.keyIndex = String(index);
   }
 
-  function tagEditor(kind, title, description, models, deny) {
-    return `<div class="tag-editor">
-      <div class="tag-head"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(description)}</span></div>
-      <div class="chips">${models.length ? models.map((model, modelIndex) => `<span class="chip ${deny ? "deny" : ""}">${escapeHTML(model)}<button class="chip-remove" type="button" data-action="remove-model" data-kind="${kind}" data-model-index="${modelIndex}" aria-label="移除此模型规则">${icons.close}</button></span>`).join("") : '<span class="empty-chips">暂无规则</span>'}</div>
-      <div class="tag-input-row"><input id="${kind}Input" class="mono" autocomplete="off" spellcheck="false" placeholder="输入模型或通配符，按 Enter"><button class="button secondary" type="button" data-action="add-model" data-kind="${kind}">添加规则</button></div>
+  function modelPicker(kind, title, description, selectedModels, deny) {
+    const selected = new Set(selectedModels);
+    const wildcardRules = selectedModels.filter((model) => model.includes("*") || model.includes("?"));
+    const wildcardSelected = selected.has("*");
+    const matchedRuleFor = (model) => wildcardRules.find((rule) => modelPatternMatches(rule, model)) || "";
+    const effectiveCatalogCount = state.models.filter((model) => selected.has(model.id) || matchedRuleFor(model.id)).length;
+    const isOpen = state.openPicker === kind;
+    const summary = wildcardSelected
+      ? "全部模型（*，包含未来新增）"
+      : state.models.length
+        ? effectiveCatalogCount ? `已匹配 ${effectiveCatalogCount} / ${state.models.length} 个模型` : `从 ${state.models.length} 个模型中选择`
+        : selectedModels.length ? `已保留 ${selectedModels.length} 条现有规则` : "模型目录不可用";
+    const chips = selectedModels.length
+      ? selectedModels.map((model) => {
+          const wildcard = model.includes("*") || model.includes("?");
+          const outsideCatalog = !wildcard && !state.models.some((candidate) => candidate.id === model);
+          return `<span class="chip ${deny ? "deny" : ""}"><span>${escapeHTML(model)}</span>${wildcard ? '<small>通配符</small>' : outsideCatalog ? '<small>目录外</small>' : ""}<button class="chip-remove" type="button" data-action="remove-model" data-kind="${kind}" data-model="${escapeHTML(model)}" aria-label="移除此模型规则">${icons.close}</button></span>`;
+        }).join("")
+      : '<span class="empty-chips">尚未选择模型</span>';
+    const wildcardRow = `<button class="model-option wildcard-option ${wildcardSelected ? "selected" : ""}" type="button" role="option" aria-selected="${wildcardSelected}" data-action="toggle-model" data-kind="${kind}" data-model="*" data-search="全部模型 all models wildcard *">
+      <span class="model-checkbox" aria-hidden="true">${wildcardSelected ? icons.check : ""}</span>
+      <span class="model-option-copy"><strong>全部模型</strong><small>${deny ? "* · 此 Key 将无法访问任何模型" : "* · 自动包含未来新增模型"}</small></span>
+      <span class="model-badge">通配符</span>
+    </button>`;
+    const commonWildcards = ["gpt-*", "claude-*", "gemini-*", "qwen-*", "deepseek-*", "grok-*", "kimi-*", "glm-*", "minimax-*"];
+    const presetRows = commonWildcards.filter((rule) => selected.has(rule) || state.models.some((model) => modelPatternMatches(rule, model.id))).map((rule) => {
+      const explicit = selected.has(rule);
+      const derived = wildcardSelected && !explicit;
+      const checked = explicit || derived;
+      const matchCount = state.models.filter((model) => modelPatternMatches(rule, model.id)).length;
+      return `<button class="model-option preset-option ${checked ? "selected" : ""} ${derived ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived}" data-action="toggle-model" data-kind="${kind}" data-model="${rule}" data-locked="${derived}" data-search="${rule} 通配符 wildcard">
+        <span class="model-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
+        <span class="model-option-copy"><strong>${rule}</strong><small>当前匹配 ${matchCount} 个模型，并覆盖未来同前缀模型</small></span>
+        <span class="model-badge">通配符</span>
+      </button>`;
+    }).join("");
+    const rows = state.models.map((model) => {
+      const explicit = selected.has(model.id);
+      const matchedRule = explicit ? "" : matchedRuleFor(model.id);
+      const derived = Boolean(matchedRule);
+      const checked = explicit || derived;
+      return `<button class="model-option ${checked ? "selected" : ""} ${derived ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived}" data-action="toggle-model" data-kind="${kind}" data-model="${escapeHTML(model.id)}" data-locked="${derived}" data-search="${escapeHTML(`${model.id} ${model.displayName}`.toLowerCase())}">
+        <span class="model-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
+        <span class="model-option-copy"><strong>${escapeHTML(model.id)}</strong>${model.displayName ? `<small>${escapeHTML(model.displayName)}</small>` : ""}${derived ? `<small>由 ${escapeHTML(matchedRule)} 通配符匹配</small>` : ""}</span>
+        ${derived ? '<span class="model-badge">通配符</span>' : ""}
+      </button>`;
+    }).join("");
+
+    return `<div class="model-editor ${deny ? "deny" : ""}">
+      <div class="tag-head"><div><strong>${escapeHTML(title)}</strong><span>${escapeHTML(description)}</span></div><span class="selection-count">${selectedModels.length} 条规则</span></div>
+      <button class="model-trigger ${isOpen ? "open" : ""}" type="button" data-action="toggle-picker" data-kind="${kind}" aria-expanded="${isOpen}">
+        <span>${escapeHTML(summary)}</span><span class="picker-chevron" aria-hidden="true">⌄</span>
+        ${state.models.length ? `<progress class="selection-meter" max="${state.models.length}" value="${effectiveCatalogCount}" aria-label="已匹配 ${effectiveCatalogCount} / ${state.models.length} 个模型"></progress>` : ""}
+      </button>
+      ${isOpen ? `<div class="model-panel">
+        ${state.models.length ? `<div class="model-search"><span>${icons.search}</span><input type="search" data-model-search="${kind}" value="${escapeHTML(state.pickerQuery)}" autocomplete="off" placeholder="搜索模型…" aria-label="搜索${escapeHTML(title)}"></div>
+        <div class="model-list" role="listbox" aria-multiselectable="true">${wildcardRow}${presetRows}${rows}<p class="model-empty" hidden>没有匹配的模型</p></div>
+        <div class="model-panel-footer"><span>已匹配 ${effectiveCatalogCount} / ${state.models.length}</span><div><button type="button" data-action="select-all-models" data-kind="${kind}">全选当前目录</button><button type="button" data-action="clear-models" data-kind="${kind}">清空</button></div></div>`
+        : `<div class="model-list compact" role="listbox" aria-multiselectable="true">${wildcardRow}</div><div class="catalog-notice"><span>${escapeHTML(state.modelsError || "没有可用模型目录。")}</span><button type="button" data-action="refresh-models">重新加载</button></div>`}
+      </div>` : ""}
+      <div class="chips">${chips}</div>
     </div>`;
   }
 
@@ -498,17 +674,72 @@
     return state.selectedIndex >= 0 ? state.keys[state.selectedIndex] : null;
   }
 
-  function addModels(kind) {
-    if (state.busy) return;
+  function validModelKind(kind) {
+    return kind === "allow_models" || kind === "deny_models";
+  }
+
+  function restorePickerView(kind, focusSearch = false) {
+    requestAnimationFrame(() => {
+      const input = editor.querySelector(`[data-model-search="${kind}"]`);
+      const list = input?.closest(".model-panel")?.querySelector(".model-list");
+      if (input) filterModelPicker(input);
+      if (list) list.scrollTop = state.pickerScroll;
+      if (focusSearch) input?.focus({ preventScroll: true });
+    });
+  }
+
+  function updateModels(kind, updater) {
+    if (state.busy || !validModelKind(kind)) return;
     const key = selectedKey();
-    const input = $(`#${kind}Input`);
-    if (!key || !input || (kind !== "allow_models" && kind !== "deny_models")) return;
-    const additions = input.value.split(/[\n,]/).map((value) => value.trim()).filter(Boolean);
-    if (!additions.length) return;
-    key[kind] = [...new Set([...key[kind], ...additions])];
+    if (!key) return;
+    const currentList = editor.querySelector(`[data-model-search="${kind}"]`)?.closest(".model-panel")?.querySelector(".model-list");
+    state.pickerScroll = currentList?.scrollTop || 0;
+    const nextModels = normalizeModels(updater([...key[kind]]));
+    if (nextModels.length === key[kind].length && nextModels.every((model, index) => model === key[kind][index])) return;
+    key[kind] = nextModels;
     markDirty();
     renderEditor();
-    requestAnimationFrame(() => $(`#${kind}Input`)?.focus());
+    if (state.openPicker === kind) restorePickerView(kind, true);
+  }
+
+  function filterModelPicker(input) {
+    const query = input.value.trim().toLowerCase();
+    state.pickerQuery = input.value;
+    const panel = input.closest(".model-panel");
+    if (!panel) return;
+    let visible = 0;
+    panel.querySelectorAll(".model-option").forEach((option) => {
+      const matches = !query || option.dataset.search.includes(query);
+      option.hidden = !matches;
+      if (matches) visible += 1;
+    });
+    const empty = panel.querySelector(".model-empty");
+    if (empty) empty.hidden = visible > 0;
+  }
+
+  function setModelBusy(busy) {
+    state.modelBusy = busy;
+    refreshDataButton.disabled = busy || state.busy;
+    saveButton.disabled = busy || state.busy || !state.dirty;
+    reloadButton.disabled = busy || state.busy || !state.status?.persistent_updates;
+    if (!busy) finalizeEndedSession();
+  }
+
+  async function refreshModelCatalog() {
+    if (state.busy || state.modelBusy) return;
+    setModelBusy(true);
+    const retryButton = editor.querySelector('[data-action="refresh-models"]');
+    if (retryButton) { retryButton.disabled = true; retryButton.innerHTML = `${icons.spinner}<span>加载中</span>`; }
+    try {
+      const result = await fetchCurrentKeys({ includeCatalog: true });
+      state.models = result.catalog?.models || [];
+      state.modelsError = result.catalog?.error || "";
+      renderEditor();
+      showToast(state.models.length ? `已加载 ${state.models.length} 个模型` : state.modelsError, state.models.length ? "success" : "error");
+    } finally {
+      setModelBusy(false);
+      syncHeader();
+    }
   }
 
   function serializablePolicy() {
@@ -677,40 +908,56 @@
     }
   }
 
-  function applyTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("key-model-access-theme", theme);
-    $("#themeButton").innerHTML = theme === "dark" ? icons.sun : icons.moon;
-    $("#themeButton").title = theme === "dark" ? "切换到浅色" : "切换到深色";
+  function resolveCPAMCTheme() {
+    try {
+      if (window.self !== window.top) {
+        const parentTheme = window.parent.document.documentElement.getAttribute("data-theme");
+        return parentTheme === "dark" || parentTheme === "white" ? parentTheme : "light";
+      }
+    } catch (_) { /* same-origin storage remains the fallback */ }
+    try {
+      const persisted = JSON.parse(localStorage.getItem(CPAMC_THEME_KEY) || "null");
+      const theme = persisted?.state?.theme;
+      if (theme === "dark" || theme === "white" || theme === "light") return theme;
+      if (theme === "auto") return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "white";
+    } catch (_) { /* use system preference */ }
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "white";
+  }
+
+  function syncTheme() {
+    const theme = resolveCPAMCTheme();
+    if (theme === "light") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.dataset.theme = theme;
   }
 
   function initializeChrome() {
-    $("#toggleSecret").innerHTML = icons.eye;
+    document.documentElement.classList.toggle("is-embedded", window.self !== window.top);
     $("#searchIcon").innerHTML = icons.search;
     refreshDataButton.innerHTML = icons.refresh;
     reloadButton.innerHTML = `${icons.file}<span class="label-long">从文件重载</span>`;
     saveButton.innerHTML = `${icons.save}<span class="label-long">已保存</span>`;
-    $("#disconnectButton").innerHTML = icons.logout;
-    const stored = localStorage.getItem("key-model-access-theme");
-    const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    applyTheme(stored === "dark" || stored === "light" ? stored : preferred);
+    syncTheme();
+    try {
+      if (window.self !== window.top) {
+        new MutationObserver(syncTheme).observe(window.parent.document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+      }
+    } catch (_) { /* cross-origin embedding is unsupported for session reuse */ }
   }
 
-  $("#authForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    connect($("#managementKey").value);
+  $("#retrySessionButton").addEventListener("click", connectFromCPAMC);
+  window.addEventListener("storage", (event) => {
+    if (event.key === CPAMC_THEME_KEY) syncTheme();
+    if (event.key !== CPAMC_AUTH_KEY && event.key !== "isLoggedIn") return;
+    if (app.hidden) {
+      connectFromCPAMC();
+      return;
+    }
+    if (!readCPAMCManagementKey()) {
+      state.sessionEnded = true;
+      finalizeEndedSession();
+    }
   });
 
-  $("#toggleSecret").addEventListener("click", () => {
-    const input = $("#managementKey");
-    const showing = input.type === "text";
-    input.type = showing ? "password" : "text";
-    $("#toggleSecret").innerHTML = showing ? icons.eye : icons.eyeOff;
-    $("#toggleSecret").setAttribute("aria-label", showing ? "显示密钥" : "隐藏密钥");
-  });
-
-  $("#themeButton").addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
-  $("#disconnectButton").addEventListener("click", disconnect);
   refreshDataButton.addEventListener("click", refreshData);
   saveButton.addEventListener("click", save);
   reloadButton.addEventListener("click", reload);
@@ -721,6 +968,9 @@
     const item = event.target.closest("[data-select]");
     if (!item) return;
     state.selectedIndex = item.dataset.select === "overview" ? -1 : Number(item.dataset.index);
+    state.openPicker = "";
+    state.pickerQuery = "";
+    state.pickerScroll = 0;
     renderNav();
     renderEditor();
   });
@@ -730,21 +980,29 @@
     const target = event.target.closest("button");
     if (!target) return;
     const action = target.dataset.action;
-    if (action === "add-model") addModels(target.dataset.kind);
-    else if (action === "remove-model") {
-      const key = selectedKey();
-      const kind = target.dataset.kind;
-      if (!key || (kind !== "allow_models" && kind !== "deny_models")) return;
-      key[kind].splice(Number(target.dataset.modelIndex), 1);
-      markDirty();
+    const kind = target.dataset.kind;
+    if (action === "toggle-picker" && validModelKind(kind)) {
+      const opening = state.openPicker !== kind;
+      state.openPicker = opening ? kind : "";
+      if (opening) { state.pickerQuery = ""; state.pickerScroll = 0; }
       renderEditor();
+      if (opening) restorePickerView(kind, true);
+    } else if (action === "toggle-model") {
+      if (target.dataset.locked === "true") return;
+      updateModels(kind, (models) => models.includes(target.dataset.model) ? models.filter((model) => model !== target.dataset.model) : [...models, target.dataset.model]);
+    } else if (action === "remove-model") {
+      updateModels(kind, (models) => models.filter((model) => model !== target.dataset.model));
+    } else if (action === "select-all-models") {
+      updateModels(kind, (models) => [...new Set([...models, ...state.models.map((model) => model.id)])]);
+    } else if (action === "clear-models") {
+      updateModels(kind, () => []);
+    } else if (action === "refresh-models") {
+      refreshModelCatalog().catch((error) => showToast(error.message, "error"));
     }
   });
 
-  editor.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || !event.target.id?.endsWith("_modelsInput")) return;
-    event.preventDefault();
-    addModels(event.target.id.replace("Input", ""));
+  editor.addEventListener("input", (event) => {
+    if (event.target.matches("[data-model-search]")) filterModelPicker(event.target);
   });
 
   document.addEventListener("keydown", (event) => {
@@ -761,4 +1019,5 @@
   });
 
   initializeChrome();
+  connectFromCPAMC();
 })();

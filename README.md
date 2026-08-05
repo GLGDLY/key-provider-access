@@ -2,7 +2,7 @@
 
 CLIProxyAPI（CPA）原生动态库插件。CPA 继续使用顶层 `api-keys` 完成下游认证；本插件只在 RequestInterceptor 中读取 CPA 提供的 `Metadata.caller_scope`，为**已经存在的 CPA API Key**执行模型 allow/deny。
 
-> `0.1.0` 是相对当前已发布最新版 `0.0.2` 的 breaking pre-1 minor。v1 策略不兼容，升级前必须完成下文的迁移步骤。
+> `0.1.x` 相对 `0.0.2` 是 breaking pre-1 minor。v1 策略不兼容，从 0.0.2 升级前必须完成下文的迁移步骤。
 
 ## 工作边界
 
@@ -37,8 +37,8 @@ macOS arm64 使用默认版本时会生成：
 
 ```text
 dist/key-model-access.dylib
-dist/key-model-access_0.1.0_darwin_arm64.zip
-dist/key-model-access_0.1.0_darwin_arm64.zip.sha256
+dist/key-model-access_0.1.1_darwin_arm64.zip
+dist/key-model-access_0.1.1_darwin_arm64.zip.sha256
 ```
 
 动态库扩展名：
@@ -65,7 +65,7 @@ make install CPA_DIR=/path/to/CLIProxyAPI
 
 ```bash
 make build GOOS=darwin GOARCH=arm64 BUILD_DIR=/path/to/plugins/darwin/arm64
-make package VERSION=0.1.0
+make package VERSION=0.1.1
 ```
 
 ### 2. 配置 CPA Key 与空的 v2 策略
@@ -141,23 +141,30 @@ v1 的 Key 身份和 v2 的 `caller_scope` 架构不同，旧策略不能原地�
 http://<CPA_HOST>:<CPA_PORT>/v0/resource/plugins/key-model-access/settings
 ```
 
-页面会以“模型权限”注册到支持插件资源菜单的 CPA 管理界面。输入 CPA `remote-management.secret-key` 后，UI 会：
+页面会以“模型权限”注册到支持插件资源菜单的 CPAMC 管理界面。UI 不再要求重复输入 Management Key，而是只读复用 CPAMC 已保存的 `cli-proxy-auth` 同源会话，并自动同步 CPAMC 的主题。自动接入要求：
+
+- CPAMC 页面与 CPA API 使用相同 origin（协议、主机和端口均相同）；
+- 登录 CPAMC 时启用“记住密码”，使 Management Key 存在于 CPAMC 的 Local Storage 会话中。
+
+条件不满足时，页面会提示返回 CPAMC 修复会话，不提供手工密钥输入。接入成功后 UI 会：
 
 1. `GET /v0/management/api-keys`，只读获取 CPA 当前顶层 Key；
 2. 在浏览器内按 CPA 的规则计算对应 `caller_scope`；
-3. 读取插件 v2 策略并按 scope 关联；
-4. 只编辑、保存 `allow_models` 和 `deny_models`。
+3. 临时使用第一个 CPA API Key 读取 `GET /v1/models`，生成可搜索、多选的模型目录；
+4. 读取插件 v2 策略并按 scope 关联；
+5. 通过选择器编辑、保存 `allow_models` 和 `deny_models`。选择器提供精确模型、全部模型 `*` 及当前目录可识别的常用模型家族通配符；已有的其他自定义通配符会继续保留并显示其目录匹配结果。
 
 UI 不创建、修改或删除 CPA Key，也不会向 `/v0/management/api-keys` 发出写请求。Key 生命周期仍应通过 CPA 配置或 CPA 自身管理能力完成。UI 会在策略保存前后核对 CPA Key 集合：保存前发现变化会中止并要求刷新；保存后发现变化会立即警告新 Key 当前默认允许全部。两次请求之间仍无法形成事务，因此 Key 变更和策略保存应由运维流程串行化。不再对应当前 Key 的旧 scope 会标记为失效策略，并在保存时保留，避免静默删除。
 
 ### UI 安全边界
 
-- `/v0/management/api-keys` 会把原始 Key 返回给已通过 Management 认证的浏览器。UI 仅在 JavaScript 中短暂用于计算 scope，并尽力清空临时数组；不会把原始 Key 写入 DOM、Local Storage、Session Storage、URL 或插件策略。
-- Management Key 只保存在当前页面 JavaScript 内存中；连接成功后输入框立即清空，刷新或断开后必须重新输入。
-- 主题偏好可以写入 Local Storage，但 Key 和 Management Key 不会写入。
+- `/v0/management/api-keys` 会把原始 Key 返回给已通过 Management 认证的浏览器。UI 仅在 JavaScript 中短暂用于计算 scope，并用第一个 Key 读取模型目录；随后尽力清空临时数组。原始 Key 不会写入 DOM、Local Storage、Session Storage、URL 或插件策略。
+- Management Key 由 CPAMC 决定是否持久化。插件只读解析 CPAMC 的同源会话，在自己的 JavaScript 内存中使用，不会复制或再次写入存储。
+- CPAMC 当前的浏览器端存储是可逆混淆，不是安全边界。同源页面、浏览器扩展和同机恶意软件均属于信任边界。
+- 页面只读同步 CPAMC 的主题，不再维护独立主题偏好。
 - 页面响应使用随机 nonce CSP、`frame-ancestors 'self'`、`X-Frame-Options: SAMEORIGIN`、`form-action 'none'` 和 `Cache-Control: no-store`。
-- 应使用 HTTPS、限制 Management API 的网络可达范围，并只在可信浏览器和设备中打开 UI。浏览器扩展、同机恶意软件或已取得 Management Key 的主体仍处于信任边界内。
-- 页面壳不包含 Key 或策略数据；所有数据请求都受 CPA Management Key 保护。
+- 应使用 HTTPS、限制 Management API 的网络可达范围，并只在可信浏览器和设备中打开 UI。
+- 页面壳不包含 Key 或策略数据；所有 Management API 数据请求都受 CPA Management Key 保护。
 
 ## 策略 schema v2
 
@@ -283,7 +290,7 @@ curl -sS \
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.1.1",
   "schema_version": 2,
   "auth_mode": "cpa_builtin_api_keys",
   "identity_source": "Metadata.caller_scope",
@@ -351,24 +358,24 @@ CPA 的 RequestInterceptor 目前没有完整覆盖以下路径或流程：
 
 ## 构建与发布产物
 
-GitHub Actions 工作流 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 负责测试、构建和发布格式。版本 0.1.0 的压缩包命名为：
+GitHub Actions 工作流 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 负责测试、构建和发布格式。版本 0.1.1 的压缩包命名为：
 
 ```text
-key-model-access_0.1.0_<goos>_<goarch>.zip
+key-model-access_0.1.1_<goos>_<goarch>.zip
 checksums.txt
 ```
 
 本地生成当前平台压缩包和聚合校验文件：
 
 ```bash
-make checksums VERSION=0.1.0
+make checksums VERSION=0.1.1
 ```
 
-维护者创建 0.1.0 发布标签的示例：
+维护者创建 0.1.1 发布标签的示例：
 
 ```bash
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin v0.1.0
+git tag -a v0.1.1 -m "Release v0.1.1"
+git push origin v0.1.1
 ```
 
 ## 官方资料
