@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,14 +31,14 @@ type pluginConfig struct {
 }
 
 type policyDocument struct {
-	Version  int            `json:"version" yaml:"version"`
-	Policies []policyConfig `json:"policies" yaml:"policies"`
+	Version  int            `json:"version" yaml:"version" toml:"version"`
+	Policies []policyConfig `json:"policies" yaml:"policies" toml:"policies"`
 }
 
 type policyConfig struct {
-	CallerScope string   `json:"caller_scope" yaml:"caller_scope"`
-	AllowModels []string `json:"allow_models" yaml:"allow_models"`
-	DenyModels  []string `json:"deny_models" yaml:"deny_models"`
+	CallerScope string   `json:"caller_scope" yaml:"caller_scope" toml:"caller_scope"`
+	AllowModels []string `json:"allow_models" yaml:"allow_models" toml:"allow_models"`
+	DenyModels  []string `json:"deny_models" yaml:"deny_models" toml:"deny_models"`
 }
 
 type runtimePolicy struct {
@@ -223,10 +224,31 @@ func readPolicyFile(path string) (policyDocument, error) {
 		return policyDocument{}, fmt.Errorf("policy file %q exceeds %d bytes", path, maxPolicyFileSize)
 	}
 	var document policyDocument
-	if err := decodeStrictYAML(raw, &document); err != nil {
-		return policyDocument{}, fmt.Errorf("decode policy file %q: %w", path, err)
+	var errDecode error
+	if strings.EqualFold(filepath.Ext(path), ".toml") {
+		errDecode = decodeStrictTOML(raw, &document)
+	} else {
+		errDecode = decodeStrictYAML(raw, &document)
+	}
+	if errDecode != nil {
+		return policyDocument{}, fmt.Errorf("decode policy file %q: %w", path, errDecode)
 	}
 	return document, nil
+}
+
+func decodeStrictTOML(raw []byte, target any) error {
+	metadata, errDecode := toml.Decode(string(raw), target)
+	if errDecode != nil {
+		return errDecode
+	}
+	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, 0, len(undecoded))
+		for _, key := range undecoded {
+			keys = append(keys, key.String())
+		}
+		return fmt.Errorf("unknown TOML fields: %s", strings.Join(keys, ", "))
+	}
+	return nil
 }
 
 func decodeStrictYAML(raw []byte, target any) error {
@@ -365,7 +387,17 @@ func writePolicyFile(path string, document policyDocument) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("policy_file is not configured")
 	}
-	raw, err := yaml.Marshal(document)
+	var raw []byte
+	var err error
+	if strings.EqualFold(filepath.Ext(path), ".toml") {
+		if len(document.Policies) == 0 {
+			raw = []byte("version = 2\npolicies = []\n")
+		} else {
+			raw, err = toml.Marshal(document)
+		}
+	} else {
+		raw, err = yaml.Marshal(document)
+	}
 	if err != nil {
 		return fmt.Errorf("encode policy file: %w", err)
 	}

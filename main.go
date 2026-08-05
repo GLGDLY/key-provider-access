@@ -125,7 +125,7 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/LTbinglingfeng/key-model-access",
 			Logo:             "",
 			ConfigFields: []configField{
-				{Name: "policy_file", Type: "string", Description: "Optional strict YAML v2 policy document used for loading and persistent Management API updates."},
+				{Name: "policy_file", Type: "string", Description: "Optional strict YAML or TOML v2 policy document. The Web UI initializes a default plugin-owned config.toml when omitted."},
 				{Name: "version", Type: "number", Description: "Inline policy schema version. Only version 2 is supported."},
 				{Name: "policies", Type: "array", Description: "Per-caller-scope allow_models and deny_models policies. caller_scope is derived by CPA's built-in API-key authentication."},
 			},

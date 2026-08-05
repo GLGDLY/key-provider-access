@@ -6,16 +6,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	policiesPath         = "/v0/management/plugins/key-model-access/policies"
-	statusPath           = "/v0/management/plugins/key-model-access/status"
-	reloadPath           = "/v0/management/plugins/key-model-access/reload"
-	settingsResourcePath = "/v0/resource/plugins/key-model-access/settings"
+	policiesPath          = "/v0/management/plugins/key-model-access/policies"
+	statusPath            = "/v0/management/plugins/key-model-access/status"
+	reloadPath            = "/v0/management/plugins/key-model-access/reload"
+	initializeStoragePath = "/v0/management/plugins/key-model-access/initialize-storage"
+	settingsResourcePath  = "/v0/resource/plugins/key-model-access/settings"
 )
 
 func interceptRequest(raw []byte) ([]byte, error) {
@@ -89,6 +93,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: policiesPath, Description: "List caller-scope model policies."},
 			{Method: http.MethodPut, Path: policiesPath, Description: "Replace all caller-scope model policies."},
 			{Method: http.MethodPost, Path: reloadPath, Description: "Reload policies from policy_file."},
+			{Method: http.MethodPost, Path: initializeStoragePath, Description: "Create or validate the default plugin-owned TOML policy file."},
 		},
 		Resources: []resourceRoute{{
 			Path:        "/settings",
@@ -116,6 +121,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return managementReplacePolicies(req.Body, req.Headers.Get("If-Match"))
 	case method == http.MethodPost && path == reloadPath:
 		return managementReload()
+	case method == http.MethodPost && path == initializeStoragePath:
+		return managementInitializeStorage(req.Body)
 	default:
 		return managementJSON(http.StatusNotFound, map[string]any{"error": "management route not found"})
 	}
@@ -212,6 +219,118 @@ func managementReplacePolicies(body []byte, ifMatch string) ([]byte, error) {
 		"revision":     revision,
 		"policy":       sanitized,
 	}, http.Header{"ETag": []string{etagForRevision(revision)}})
+}
+
+func managementInitializeStorage(body []byte) ([]byte, error) {
+	mutationMu.Lock()
+	defer mutationMu.Unlock()
+
+	if len(body) == 0 || len(body) > 4096 {
+		return managementJSON(http.StatusBadRequest, map[string]any{"error": "plugins_dir request is required"})
+	}
+	var request struct {
+		PluginsDir string `json:"plugins_dir"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return managementJSON(http.StatusBadRequest, map[string]any{"error": "invalid storage initialization body: " + err.Error()})
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return managementJSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+	}
+	pluginsDir := strings.TrimSpace(request.PluginsDir)
+	if pluginsDir == "" || strings.ContainsRune(pluginsDir, '\x00') {
+		return managementJSON(http.StatusBadRequest, map[string]any{"error": "plugins_dir must be a non-empty filesystem path"})
+	}
+	pluginsDir = filepath.Clean(pluginsDir)
+	if !pluginBinaryExists(pluginsDir) {
+		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": "plugins_dir does not contain the installed key-model-access binary"})
+	}
+	policyDir := filepath.Join(pluginsDir, pluginID)
+	if info, errStat := os.Lstat(policyDir); errStat == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return managementJSON(http.StatusConflict, map[string]any{"error": "default policy directory exists but is not a regular directory"})
+		}
+	} else if !os.IsNotExist(errStat) {
+		return managementJSON(http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("inspect default policy directory: %v", errStat)})
+	}
+	policyPath := filepath.Join(policyDir, "config.toml")
+	created := false
+	info, errStat := os.Lstat(policyPath)
+	switch {
+	case errStat == nil:
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return managementJSON(http.StatusConflict, map[string]any{"error": "default policy path exists but is not a regular file"})
+		}
+	case os.IsNotExist(errStat):
+		cfg, snapshot, _, _, _, _ := globalState.current()
+		if snapshot.BlockAll {
+			return managementJSON(http.StatusConflict, map[string]any{"error": "cannot initialize storage while the active policy is fail-closed"})
+		}
+		document := documentFromConfig(cfg)
+		if _, sanitized, errCompile := compileDocument(document); errCompile != nil {
+			return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": errCompile.Error()})
+		} else if errWrite := writePolicyFile(policyPath, sanitized); errWrite != nil {
+			return managementJSON(http.StatusInternalServerError, map[string]any{"error": errWrite.Error()})
+		}
+		created = true
+	default:
+		return managementJSON(http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("inspect default policy path: %v", errStat)})
+	}
+
+	document, errRead := readPolicyFile(policyPath)
+	if errRead != nil {
+		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": errRead.Error()})
+	}
+	_, sanitized, errCompile := compileDocument(document)
+	if errCompile != nil {
+		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": errCompile.Error()})
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	return managementJSON(status, map[string]any{
+		"created":      created,
+		"policy_file":  policyPath,
+		"policy_count": len(sanitized.Policies),
+	})
+}
+
+func pluginBinaryExists(pluginsDir string) bool {
+	extension := ".so"
+	switch runtime.GOOS {
+	case "darwin":
+		extension = ".dylib"
+	case "windows":
+		extension = ".dll"
+	}
+	candidateDirs := []string{
+		filepath.Join(pluginsDir, runtime.GOOS, runtime.GOARCH),
+		pluginsDir,
+	}
+	for _, dir := range candidateDirs {
+		entries, errRead := os.ReadDir(dir)
+		if errRead != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry == nil || !entry.Type().IsRegular() {
+				continue
+			}
+			name := entry.Name()
+			lowerName := strings.ToLower(name)
+			if !strings.HasSuffix(lowerName, extension) {
+				continue
+			}
+			base := name[:len(name)-len(extension)]
+			if base == pluginID || (strings.HasPrefix(base, pluginID+"-v") && len(base) > len(pluginID)+2) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func managementReload() ([]byte, error) {

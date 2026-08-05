@@ -16,8 +16,11 @@ plugins:
       version: 2
       policies: []
 
-      # Optional persistence. Do not enable this until the target file exists:
-      # copy/create a v2 document matching policies.example.yaml first. A missing
-      # policy_file currently makes the plugin fail closed.
-      # Relative paths resolve from CLIProxyAPI's working directory.
+      # Persistence is initialized automatically the first time the Web UI opens:
+      # <plugins.dir>/key-model-access/config.toml is created, then this plugin
+      # config is patched with policy_file through CPA's Management API.
+      #
+      # Optional explicit override (YAML and TOML are supported). The target must
+      # already contain a valid v2 policy document; a missing/invalid explicit
+      # policy_file fails closed. Relative paths use CLIProxyAPI's working directory.
       # policy_file: "config/key-model-access-policies.yaml"

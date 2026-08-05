@@ -37,8 +37,8 @@ macOS arm64 使用默认版本时会生成：
 
 ```text
 dist/key-model-access.dylib
-dist/key-model-access_0.1.1_darwin_arm64.zip
-dist/key-model-access_0.1.1_darwin_arm64.zip.sha256
+dist/key-model-access_0.1.2_darwin_arm64.zip
+dist/key-model-access_0.1.2_darwin_arm64.zip.sha256
 ```
 
 动态库扩展名：
@@ -65,7 +65,7 @@ make install CPA_DIR=/path/to/CLIProxyAPI
 
 ```bash
 make build GOOS=darwin GOARCH=arm64 BUILD_DIR=/path/to/plugins/darwin/arm64
-make package VERSION=0.1.1
+make package VERSION=0.1.2
 ```
 
 ### 2. 配置 CPA Key 与空的 v2 策略
@@ -89,35 +89,34 @@ plugins:
 
 此状态下，CPA 顶层 `api-keys` 仍负责认证，插件对所有已认证 Key 默认允许全部模型。随后应在维护窗口内通过 Web UI 为需要限制的 Key 生成 v2 策略。
 
-### 3. 可选：启用持久化
+### 3. 默认持久化
 
-不配置 `policy_file` 时，Management API 修改只保存在插件内存中，重载或重启后丢失。**启用 `policy_file` 前必须先创建它**；当前后端在文件不存在时会 fail closed，而不会回退到内联策略。
+首次打开 Web UI 时，页面会通过 CPA 官方 Management API 读取实际的 `plugins.dir`，自动创建：
 
-先创建一个与 [`policies.example.yaml`](./policies.example.yaml) 相同 schema 的 v2 文件。用于首次启动时，推荐从空文档开始：
-
-```bash
-mkdir -p config
-printf 'version: 2\npolicies: []\n' > config/key-model-access-policies.yaml
-chmod 600 config/key-model-access-policies.yaml
+```text
+<plugins.dir>/key-model-access/config.toml
 ```
 
-确认文件存在后，再在插件配置中加入：
+随后页面会将该路径写入 `plugins.configs.key-model-access.policy_file`，由 CPA 保存配置并触发插件重配置。初始化会保留当前有效的内联 v2 策略；若目标文件已经存在，只会校验并复用，不会覆盖。之后 UI 修改会以 `0600` 权限原子保存，CPA 或插件重启后仍然存在。
+
+之所以由 Web UI 发现目录，而不是由动态库猜测自身路径，是因为 CPA 的插件 ABI 不传递 `plugins.dir`，该目录可自定义，且 Windows 会从临时 shadow copy 加载 DLL。
+
+如需把策略放到其他位置，可显式配置已有的 YAML 或 TOML 文件：
 
 ```yaml
 policy_file: "config/key-model-access-policies.yaml"
 ```
 
-相对路径以 CPA 工作目录为准。配置了 `policy_file` 后，该文件是权威策略来源；内联 `version` / `policies` 不再生效。
+显式目标必须预先存在且是有效的 v2 文档；不存在或无效时插件会 fail closed。相对路径以 CPA 工作目录为准。配置了 `policy_file` 后，该文件是权威策略来源；内联 `version` / `policies` 不再生效。
 
-Docker 部署应持久化动态库和整个策略目录：
+Docker 部署应以**可写**方式持久化整个插件目录：
 
 ```yaml
 volumes:
   - ./plugins:/CLIProxyAPI/plugins
-  - ./config:/CLIProxyAPI/config
 ```
 
-不要只 bind mount 单个策略文件。插件使用同目录临时文件、`fsync` 和 `rename` 原子替换，单文件挂载通常会阻止保存。
+若显式使用其他策略目录，也要持久化整个目录。不要只 bind mount 单个策略文件；插件使用同目录临时文件、`fsync` 和 `rename` 原子替换，单文件挂载通常会阻止保存。插件目录只读或 CPA 配置文件不可写时，自动初始化会在 UI 中报告错误并继续使用内存模式。
 
 ## 从 0.0.2 / v1 升级
 
@@ -129,7 +128,7 @@ v1 的 Key 身份和 v2 的 `caller_scope` 架构不同，旧策略不能原地�
 4. 移除指向 v1 文件的 `policy_file`，先改为内联 `version: 2`、`policies: []`。不要让 0.1.0 读取 v1 文件；它会拒绝 v1 并在首次启动时 fail closed。
 5. 安装 0.1.0 并重启 CPA，先验证顶层 Key 仍由 CPA 正常认证。
 6. 打开 Web UI，读取当前 CPA Key，并为需要限制的 Key **重新生成 v2 策略**。
-7. 如需持久化，先创建有效的 v2 文件，再配置 `policy_file`，重新在 UI 中核对并保存。
+7. 打开新版 Web UI，让它自动创建并配置默认 `config.toml`，重新核对并保存。若使用显式自定义路径，则先创建有效的 v2 文件。
 
 空 v2 策略会默认允许所有已认证 Key 调用所有被拦截器覆盖的模型。迁移期间应保持外部流量关闭，直到限制策略已重新生成并验证。
 
@@ -148,11 +147,12 @@ http://<CPA_HOST>:<CPA_PORT>/v0/resource/plugins/key-model-access/settings
 
 条件不满足时，页面会提示返回 CPAMC 修复会话，不提供手工密钥输入。接入成功后 UI 会：
 
-1. `GET /v0/management/api-keys`，只读获取 CPA 当前顶层 Key；
-2. 在浏览器内按 CPA 的规则计算对应 `caller_scope`；
-3. 临时使用第一个 CPA API Key 读取 `GET /v1/models`，生成可搜索、多选的模型目录；
-4. 读取插件 v2 策略并按 scope 关联；
-5. 通过选择器编辑、保存 `allow_models` 和 `deny_models`。选择器提供精确模型、全部模型 `*` 及当前目录可识别的常用模型家族通配符；已有的其他自定义通配符会继续保留并显示其目录匹配结果。
+1. 若尚未持久化，读取 CPA 的 `plugins_dir`，创建 `<plugins.dir>/key-model-access/config.toml`，再通过 CPA 官方插件配置 API 写入 `policy_file`；
+2. `GET /v0/management/api-keys`，只读获取 CPA 当前顶层 Key；
+3. 在浏览器内按 CPA 的规则计算对应 `caller_scope`；
+4. 临时使用第一个 CPA API Key 读取 `GET /v1/models`，生成可搜索、多选的模型目录；
+5. 读取插件 v2 策略并按 scope 关联；
+6. 通过选择器编辑、保存 `allow_models` 和 `deny_models`。选择器提供精确模型、全部模型 `*` 及当前目录可识别的常用模型家族通配符；已有的其他自定义通配符会继续保留并显示其目录匹配结果。
 
 UI 不创建、修改或删除 CPA Key，也不会向 `/v0/management/api-keys` 发出写请求。Key 生命周期仍应通过 CPA 配置或 CPA 自身管理能力完成。UI 会在策略保存前后核对 CPA Key 集合：保存前发现变化会中止并要求刷新；保存后发现变化会立即警告新 Key 当前默认允许全部。两次请求之间仍无法形成事务，因此 Key 变更和策略保存应由运维流程串行化。不再对应当前 Key 的旧 scope 会标记为失效策略，并在保存时保留，避免静默删除。
 
@@ -191,6 +191,19 @@ policies:
       - "*-preview"
 ```
 
+### TOML
+
+默认生成的 `config.toml` 使用同一 schema：
+
+```toml
+version = 2
+
+[[policies]]
+caller_scope = "f7291f3315e5ab0d3c02015a081879d748693f231d8370b43f38f57be991734a"
+allow_models = ["gpt-5*", "claude-sonnet-*"]
+deny_models = ["*-preview"]
+```
+
 ### JSON
 
 Management API 的 PUT 请求体使用同一 schema：
@@ -216,7 +229,7 @@ Management API 的 PUT 请求体使用同一 schema：
 4. `allow_models` 为空：允许所有未命中 deny 的模型。
 5. allow 和 deny 都为空等同于允许全部；UI 通常不会为这种 Key 写入策略。
 
-YAML 和 JSON 都严格拒绝未知字段、重复 `caller_scope` 和非 64 位十六进制 scope。旧的 `key`、`key_sha256`、`id`、`enabled` 等身份字段不会被接受。
+YAML、TOML 和 JSON 都严格拒绝未知字段、重复 `caller_scope` 和非 64 位十六进制 scope。旧的 `key`、`key_sha256`、`id`、`enabled` 等身份字段不会被接受。
 
 ## Management API
 
@@ -228,8 +241,9 @@ YAML 和 JSON 都严格拒绝未知字段、重复 `caller_scope` 和非 64 位�
 | `GET` | `/v0/management/plugins/key-model-access/policies` | 获取完整 v2 策略和 revision |
 | `PUT` | `/v0/management/plugins/key-model-access/policies` | 用 JSON 原子替换全部策略 |
 | `POST` | `/v0/management/plugins/key-model-access/reload` | 从已配置的 `policy_file` 重载 |
+| `POST` | `/v0/management/plugins/key-model-access/initialize-storage` | 在给定的 CPA 插件根目录创建或校验默认 `config.toml` |
 
-UI 还会只读调用 CPA 自带的 `GET /v0/management/api-keys`；它不是插件路由，并会向已授权管理客户端返回 CPA Key，请勿记录或转发响应。
+UI 还会调用 CPA 自带的 `GET /v0/management/plugins` 获取实际插件目录，并通过 `PATCH /v0/management/plugins/key-model-access/config` 仅写入 `policy_file`。它会只读调用 `GET /v0/management/api-keys`；该接口会向已授权管理客户端返回 CPA Key，请勿记录或转发响应。
 
 准备变量并查询状态：
 
@@ -274,7 +288,7 @@ JSON
 
 `GET policies` 返回 revision 和 ETag。携带 `If-Match` 可避免覆盖并发修改；revision 不匹配时返回 `412`。为兼容调用方，当前后端仍接受不带 `If-Match` 的 PUT，但不推荐。
 
-配置 `policy_file` 后，PUT 会以 `0600` 权限原子持久化；未配置时只更新内存。reload 在未配置文件时返回 `409`，文件无效时保留最后一个有效策略并报告错误。
+配置 `policy_file` 后，PUT 会以 `0600` 权限原子持久化；Web UI 会在首次打开时自动完成默认配置。自动初始化失败或尚未打开 UI 时，未配置文件的 PUT 仍只更新内存。reload 在未配置文件时返回 `409`，文件无效时保留最后一个有效策略并报告错误。
 
 ## 验证
 
@@ -290,7 +304,7 @@ curl -sS \
 
 ```json
 {
-  "version": "0.1.1",
+  "version": "0.1.2",
   "schema_version": 2,
   "auth_mode": "cpa_builtin_api_keys",
   "identity_source": "Metadata.caller_scope",
@@ -353,29 +367,29 @@ CPA 的 RequestInterceptor 目前没有完整覆盖以下路径或流程：
 - 原始 API Key 只应存在于 CPA 顶层 `api-keys`；不要放进插件配置、策略文件或 PUT 请求。
 - `caller_scope` 是稳定的伪名标识，仍应视为敏感管理数据；不要公开策略响应和文件。
 - Management API 响应设置 `Cache-Control: no-store`；应限制 Management Key 权限并定期轮换。
-- `policy_file` 建议放在仅 CPA 进程用户可访问的位置，并纳入安全备份。
+- 默认策略位于 `<plugins.dir>/key-model-access/config.toml`；应限制插件目录权限并将该插件专属子目录纳入安全备份。显式 `policy_file` 同样应仅允许 CPA 进程用户访问。
 - 无策略默认允许全部。新增 CPA Key 后，应及时在 UI 中刷新并配置限制；需要默认拒绝的新 Key 接入流程时，应在外层自动化或网络边界中实现。
 
 ## 构建与发布产物
 
-GitHub Actions 工作流 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 负责测试、构建和发布格式。版本 0.1.1 的压缩包命名为：
+GitHub Actions 工作流 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 负责测试、构建和发布格式。版本 0.1.2 的压缩包命名为：
 
 ```text
-key-model-access_0.1.1_<goos>_<goarch>.zip
+key-model-access_0.1.2_<goos>_<goarch>.zip
 checksums.txt
 ```
 
 本地生成当前平台压缩包和聚合校验文件：
 
 ```bash
-make checksums VERSION=0.1.1
+make checksums VERSION=0.1.2
 ```
 
-维护者创建 0.1.1 发布标签的示例：
+维护者创建 0.1.2 发布标签的示例：
 
 ```bash
-git tag -a v0.1.1 -m "Release v0.1.1"
-git push origin v0.1.1
+git tag -a v0.1.2 -m "Release v0.1.2"
+git push origin v0.1.2
 ```
 
 ## 官方资料

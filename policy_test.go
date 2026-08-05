@@ -5,10 +5,28 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func installDummyPluginBinary(t *testing.T, pluginsDir string) {
+	t.Helper()
+	extension := ".so"
+	if runtime.GOOS == "darwin" {
+		extension = ".dylib"
+	} else if runtime.GOOS == "windows" {
+		extension = ".dll"
+	}
+	platformDir := filepath.Join(pluginsDir, runtime.GOOS, runtime.GOARCH)
+	if err := os.MkdirAll(platformDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(platformDir, pluginID+extension), []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 const (
 	scopeA = "c411112d71a0f4c7059026c25e281d0b46347a2173a1663735d758cd57c37bcb"
@@ -191,6 +209,131 @@ func TestPolicyFileIsStrictV2(t *testing.T) {
 	}
 	if _, _, err := compileDocument(document); err == nil || !strings.Contains(err.Error(), "only version 2") {
 		t.Fatalf("v1 compile error = %v", err)
+	}
+}
+
+func TestTOMLPolicyFileRoundTripAndStrictFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	document := policyDocument{Version: 2, Policies: []policyConfig{{
+		CallerScope: scopeA,
+		AllowModels: []string{"gpt-*"},
+		DenyModels:  []string{"*-preview"},
+	}}}
+	if err := writePolicyFile(path, document); err != nil {
+		t.Fatalf("writePolicyFile() error = %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "[[policies]]") || !strings.Contains(string(raw), `caller_scope = "`+scopeA+`"`) {
+		t.Fatalf("unexpected TOML policy:\n%s", raw)
+	}
+	loaded, err := readPolicyFile(path)
+	if err != nil {
+		t.Fatalf("readPolicyFile() error = %v", err)
+	}
+	if len(loaded.Policies) != 1 || loaded.Policies[0].CallerScope != scopeA {
+		t.Fatalf("loaded TOML policy = %#v", loaded)
+	}
+	if err := os.WriteFile(path, []byte("version = 2\nunknown = true\npolicies = []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPolicyFile(path); err == nil || !strings.Contains(err.Error(), "unknown TOML fields") {
+		t.Fatalf("unknown TOML field error = %v", err)
+	}
+}
+
+func TestManagementInitializeStorageCreatesPluginTOMLWithoutMutatingRuntime(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
+		CallerScope: scopeA,
+		AllowModels: []string{"gpt-*"},
+	}}})
+	pluginsDir := t.TempDir()
+	installDummyPluginBinary(t, pluginsDir)
+	body, _ := json.Marshal(map[string]string{"plugins_dir": pluginsDir})
+	raw, err := managementInitializeStorage(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := decodeManagementResponse(t, raw)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("initialize status = %d body = %s", response.StatusCode, response.Body)
+	}
+	var payload struct {
+		Created    bool   `json:"created"`
+		PolicyFile string `json:"policy_file"`
+	}
+	if err := json.Unmarshal(response.Body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	expectedPath := filepath.Join(pluginsDir, pluginID, "config.toml")
+	if !payload.Created || payload.PolicyFile != expectedPath {
+		t.Fatalf("initialize payload = %#v, want path %q", payload, expectedPath)
+	}
+	document, err := readPolicyFile(expectedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Policies) != 1 || document.Policies[0].CallerScope != scopeA {
+		t.Fatalf("initialized document = %#v", document)
+	}
+	cfg, _, _, _, _, _ := globalState.current()
+	if cfg.PolicyFile != "" {
+		t.Fatalf("initializer mutated runtime policy_file before host config PATCH: %q", cfg.PolicyFile)
+	}
+
+	raw, err = managementInitializeStorage(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = decodeManagementResponse(t, raw)
+	if response.StatusCode != http.StatusOK || strings.Contains(string(response.Body), `"created":true`) {
+		t.Fatalf("second initialize response = %d %s", response.StatusCode, response.Body)
+	}
+}
+
+func TestManagementInitializeStorageRejectsUnverifiedDirectory(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2})
+	body, _ := json.Marshal(map[string]string{"plugins_dir": t.TempDir()})
+	raw, err := managementInitializeStorage(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := decodeManagementResponse(t, raw)
+	if response.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(response.Body), "installed key-model-access binary") {
+		t.Fatalf("unverified plugins_dir response = %d %s", response.StatusCode, response.Body)
+	}
+}
+
+func TestManagementInitializeStorageDoesNotOverwriteInvalidExistingFile(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2})
+	pluginsDir := t.TempDir()
+	installDummyPluginBinary(t, pluginsDir)
+	policyDir := filepath.Join(pluginsDir, pluginID)
+	if err := os.MkdirAll(policyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(policyDir, "config.toml")
+	original := []byte("version = 1\npolicies = []\n")
+	if err := os.WriteFile(policyPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"plugins_dir": pluginsDir})
+	raw, err := managementInitializeStorage(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := decodeManagementResponse(t, raw)
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("initialize status = %d body = %s", response.StatusCode, response.Body)
+	}
+	persisted, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(persisted) != string(original) {
+		t.Fatalf("invalid existing file was overwritten:\n%s", persisted)
 	}
 }
 

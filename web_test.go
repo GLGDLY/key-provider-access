@@ -17,6 +17,16 @@ func TestManagementRegistrationIncludesSettingsResource(t *testing.T) {
 	if resource.Path != "/settings" || resource.Menu == "" {
 		t.Fatalf("settings resource = %#v", resource)
 	}
+	foundInitializer := false
+	for _, route := range registration.Routes {
+		if route.Method == http.MethodPost && route.Path == initializeStoragePath {
+			foundInitializer = true
+			break
+		}
+	}
+	if !foundInitializer {
+		t.Fatalf("management routes missing default storage initializer: %#v", registration.Routes)
+	}
 }
 
 func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
@@ -43,6 +53,9 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"const PATHS",
 		"/v0/management/api-keys",
 		"/v1/models",
+		"/initialize-storage",
+		"/v0/management/plugins/key-model-access/config",
+		"plugins_dir",
 		"cli-proxy-auth",
 		"cli-proxy-theme",
 		"class=\"model-trigger",

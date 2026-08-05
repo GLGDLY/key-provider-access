@@ -5,6 +5,9 @@
     status: "/v0/management/plugins/key-model-access/status",
     policies: "/v0/management/plugins/key-model-access/policies",
     reload: "/v0/management/plugins/key-model-access/reload",
+    initializeStorage: "/v0/management/plugins/key-model-access/initialize-storage",
+    pluginList: "/v0/management/plugins",
+    pluginConfig: "/v0/management/plugins/key-model-access/config",
     apiKeys: "/v0/management/api-keys",
     models: "/v1/models"
   };
@@ -33,6 +36,7 @@
     keys: [],
     models: [],
     modelsError: "",
+    persistenceSetupError: "",
     stalePolicies: [],
     revision: 0,
     selectedIndex: -1,
@@ -319,14 +323,53 @@
     }
   }
 
+  async function waitForPersistentStatus(expectedPath) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 250));
+      try {
+        const status = await api(PATHS.status, { method: "GET", timeout: 1500 });
+        if (status?.persistent_updates && status.policy_file === expectedPath) return status;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("CPA 已保存插件配置，但等待策略文件生效超时。");
+  }
+
+  async function initializeDefaultPersistence() {
+    const pluginList = await api(PATHS.pluginList, { method: "GET" });
+    const pluginsDir = typeof pluginList?.plugins_dir === "string" ? pluginList.plugins_dir.trim() : "";
+    if (!pluginsDir) throw new Error("CPA 未返回有效的 plugins_dir。");
+    const initialized = await api(PATHS.initializeStorage, {
+      method: "POST",
+      body: JSON.stringify({ plugins_dir: pluginsDir })
+    });
+    const policyFile = typeof initialized?.policy_file === "string" ? initialized.policy_file.trim() : "";
+    if (!policyFile) throw new Error("插件未返回默认策略文件路径。");
+    await api(PATHS.pluginConfig, {
+      method: "PATCH",
+      body: JSON.stringify({ policy_file: policyFile })
+    });
+    return waitForPersistentStatus(policyFile);
+  }
+
   async function fetchRemoteData() {
     // Verify Management authentication once before issuing the remaining reads.
-    const status = await api(PATHS.status, { method: "GET" });
+    let status = await api(PATHS.status, { method: "GET" });
+    let persistenceSetupError = "";
+    if (!status?.persistent_updates) {
+      try {
+        status = await initializeDefaultPersistence();
+      } catch (error) {
+        persistenceSetupError = error.message || "自动创建插件策略文件失败。";
+      }
+    }
     const [policies, keyData] = await Promise.all([
       api(PATHS.policies, { method: "GET" }),
       fetchCurrentKeys({ includeCatalog: true })
     ]);
-    return { status, policies, keys: keyData.keys, catalog: keyData.catalog };
+    return { status, policies, keys: keyData.keys, catalog: keyData.catalog, persistenceSetupError };
   }
 
   function applyPolicyDocument(rawDocument) {
@@ -352,6 +395,7 @@
     state.keys = remote.keys;
     state.models = remote.catalog?.models || [];
     state.modelsError = remote.catalog?.error || "";
+    state.persistenceSetupError = remote.persistenceSetupError || "";
     applyPolicyDocument(remote.policies?.policy);
     state.revision = Number(remote.policies?.revision ?? remote.status?.revision ?? 0);
     state.dirty = false;
@@ -474,10 +518,12 @@
     if (!state.status) return;
     if (state.status.persistent_updates) {
       notice.className = "persistence-notice";
-      notice.textContent = `策略保存到 ${state.status.policy_file}`;
+      notice.textContent = `策略自动保存到 ${state.status.policy_file}`;
     } else {
       notice.className = "persistence-notice warning";
-      notice.textContent = "当前为内存模式；插件重载后修改会丢失。请配置 policy_file。";
+      notice.textContent = state.persistenceSetupError
+        ? `自动持久化失败：${state.persistenceSetupError} 当前修改仅保存在内存中。`
+        : "当前为内存模式；打开页面时会自动创建插件策略文件。";
     }
   }
 
