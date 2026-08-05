@@ -10,8 +10,9 @@ const (
 	abiVersion    uint32 = 1
 	schemaVersion uint32 = 2
 	pluginID             = "key-model-access"
-	pluginVersion        = "0.2.0"
 )
+
+var pluginVersion = "0.2.0"
 
 const (
 	methodPluginRegister           = "plugin.register"

@@ -40,15 +40,62 @@ CPA 当前插件 API **不能修改内置 `/v1/models` handler 的响应**。因
 ```bash
 make test
 make build
+make package
 ```
 
-产物：
+以 macOS arm64 和默认版本为例，会生成：
 
-- macOS：`dist/key-model-access.dylib`
-- Linux / FreeBSD：`dist/key-model-access.so`
-- Windows：`dist/key-model-access.dll`
+```text
+dist/key-model-access.dylib
+dist/key-model-access_0.2.0_darwin_arm64.zip
+dist/key-model-access_0.2.0_darwin_arm64.zip.sha256
+```
+
+动态库扩展名：
+
+- macOS：`key-model-access.dylib`
+- Linux / FreeBSD：`key-model-access.so`
+- Windows：`key-model-access.dll`
+
+可以覆盖目标平台、输出目录和写入插件的运行时版本：
+
+```bash
+make build GOOS=darwin GOARCH=arm64 BUILD_DIR=/path/to/plugins/darwin/arm64
+make package VERSION=0.2.0
+```
 
 Go 的 `c-shared` 产物必须在目标系统上构建；不能仅设置 `GOOS` 进行普通交叉编译。
+
+## GitHub 发布
+
+发布流程与插件商店产物格式由 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 自动完成。Pull Request 和手动运行会执行测试并构建产物；推送 `v*` 标签还会创建对应的 GitHub Release。
+
+每个 Release 包含以下平台的 zip：
+
+- Linux：amd64、arm64
+- macOS：amd64、arm64
+- Windows：amd64、arm64
+- FreeBSD：amd64
+
+产物命名为：
+
+```text
+key-model-access_<version>_<goos>_<goarch>.zip
+checksums.txt
+```
+
+每个 zip 的根目录只包含对应平台的动态库，`checksums.txt` 使用 `sha256sum` 格式。创建发布：
+
+```bash
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin v0.2.0
+```
+
+本地可生成当前平台的压缩包和聚合校验文件：
+
+```bash
+make checksums VERSION=0.2.0
+```
 
 ## 安装
 
