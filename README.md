@@ -37,8 +37,8 @@ macOS arm64 使用默认版本时会生成：
 
 ```text
 dist/key-model-access.dylib
-dist/key-model-access_0.1.2_darwin_arm64.zip
-dist/key-model-access_0.1.2_darwin_arm64.zip.sha256
+dist/key-model-access_0.1.3_darwin_arm64.zip
+dist/key-model-access_0.1.3_darwin_arm64.zip.sha256
 ```
 
 动态库扩展名：
@@ -65,7 +65,7 @@ make install CPA_DIR=/path/to/CLIProxyAPI
 
 ```bash
 make build GOOS=darwin GOARCH=arm64 BUILD_DIR=/path/to/plugins/darwin/arm64
-make package VERSION=0.1.2
+make package VERSION=0.1.3
 ```
 
 ### 2. 配置 CPA Key 与空的 v2 策略
@@ -304,7 +304,7 @@ curl -sS \
 
 ```json
 {
-  "version": "0.1.2",
+  "version": "0.1.3",
   "schema_version": 2,
   "auth_mode": "cpa_builtin_api_keys",
   "identity_source": "Metadata.caller_scope",
@@ -372,24 +372,24 @@ CPA 的 RequestInterceptor 目前没有完整覆盖以下路径或流程：
 
 ## 构建与发布产物
 
-GitHub Actions 工作流 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 负责测试、构建和发布格式。版本 0.1.2 的压缩包命名为：
+GitHub Actions 工作流 [`.github/workflows/build.yml`](./.github/workflows/build.yml) 负责测试、构建和发布格式。版本 0.1.3 的压缩包命名为：
 
 ```text
-key-model-access_0.1.2_<goos>_<goarch>.zip
+key-model-access_0.1.3_<goos>_<goarch>.zip
 checksums.txt
 ```
 
 本地生成当前平台压缩包和聚合校验文件：
 
 ```bash
-make checksums VERSION=0.1.2
+make checksums VERSION=0.1.3
 ```
 
-维护者创建 0.1.2 发布标签的示例：
+维护者创建 0.1.3 发布标签的示例：
 
 ```bash
-git tag -a v0.1.2 -m "Release v0.1.2"
-git push origin v0.1.2
+git tag -a v0.1.3 -m "Release v0.1.3"
+git push origin v0.1.3
 ```
 
 ## 官方资料

@@ -547,9 +547,9 @@
       </button>
       <p class="nav-group-label">当前 CPA API Keys</p>
       ${visible.length ? visible.map(({ key, index }) => `
-        <button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selectedIndex === index ? "page" : "false"}">
+        <button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selectedIndex === index ? "page" : "false"}" aria-label="${escapeHTML(keyLabel(index))}，SHA-256 指纹 ${escapeHTML(key.fingerprint)}">
           <span class="nav-icon key">${icons.key}</span>
-          <span class="nav-copy"><strong>${key.mask}</strong><span>SHA-256 ${escapeHTML(key.fingerprint)}</span></span>
+          <span class="nav-copy"><strong>${escapeHTML(keyLabel(index))}</strong><span>SHA-256 ${escapeHTML(key.fingerprint)}</span></span>
         </button>`).join("") : `<p class="empty-nav">${query ? "没有匹配的 Key" : "CPA 当前没有 API Key"}</p>`}
     `;
   }

@@ -63,6 +63,7 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"state.pendingDraft = serializablePolicy()",
 		"const commonWildcards",
 		"cli-proxy-api:caller-scope:v1\\0",
+		"<strong>${escapeHTML(keyLabel(index))}</strong>",
 		":root",
 	} {
 		if !strings.Contains(body, expected) {
