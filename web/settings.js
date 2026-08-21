@@ -647,10 +647,47 @@
     return key.allow_profiles.length > 0 || key.deny_profiles.length > 0;
   }
 
+  function keyAllowsProfile(key, profileID) {
+    if (key.deny_profiles.some((rule) => profilePatternMatches(rule, profileID))) return false;
+    if (!key.allow_profiles.length) return true;
+    return key.allow_profiles.some((rule) => profilePatternMatches(rule, profileID));
+  }
+
+  function providerAccessCounts() {
+    const byProvider = new Map();
+    for (const profile of state.profiles) {
+      const provider = String(profile.provider || "unknown").trim() || "unknown";
+      if (!byProvider.has(provider)) byProvider.set(provider, { provider, profiles: 0, enabled: 0, disabled: 0 });
+      const counts = byProvider.get(provider);
+      counts.profiles += 1;
+      for (const key of state.keys) {
+        if (keyAllowsProfile(key, profile.id)) counts.enabled += 1;
+        else counts.disabled += 1;
+      }
+    }
+    return [...byProvider.values()].sort((left, right) => left.provider.localeCompare(right.provider));
+  }
+
+  function providerAccessTable(counts) {
+    if (!counts.length) {
+      return `<p class="provider-empty">${escapeHTML(state.profilesError || "CPA 当前没有可统计的上游配置。")}</p>`;
+    }
+    return `<div class="provider-table-wrap"><table class="provider-table">
+      <thead><tr><th scope="col">Provider</th><th scope="col">Profiles</th><th scope="col">允许 / Enabled</th><th scope="col">拒绝 / Disabled</th></tr></thead>
+      <tbody>${counts.map((item) => `<tr>
+        <th scope="row"><span class="provider-name">${escapeHTML(item.provider)}</span></th>
+        <td>${item.profiles}</td>
+        <td><strong class="provider-count enabled">${item.enabled}</strong></td>
+        <td><strong class="provider-count disabled">${item.disabled}</strong></td>
+      </tr>`).join("")}</tbody>
+    </table></div>`;
+  }
+
   function renderOverview() {
     const configured = state.keys.filter(hasRules).length;
     const defaults = state.keys.length - configured;
     const staleCount = state.stalePolicies.length;
+    const providerCounts = providerAccessCounts();
     const statusWarning = state.status?.last_error
       ? `<div class="notice">${icons.warning}<span><strong>最近一次配置存在问题：</strong> ${escapeHTML(state.status.last_error)}。当前仍在使用最后一个有效策略。</span></div>`
       : "";
@@ -673,6 +710,10 @@
         ${statCard("已配置", configured, "含 allow 或 deny")}
         ${statCard("默认允许", defaults, "没有上游配置规则")}
         ${statCard("失效策略", staleCount, "保存时仍保留", staleCount > 0)}
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Provider 访问计数</h2><p>按当前 CPA Key × Profile 组合统计；每个 Key 对每个上游 Profile 计一次。</p></div>
+        ${providerAccessTable(providerCounts)}
       </section>
       <section class="card">
         <div class="card-head"><h2>认证边界</h2><p>Key 身份与上游配置授权相互分离。</p></div>

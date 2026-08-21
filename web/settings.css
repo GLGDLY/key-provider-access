@@ -385,6 +385,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .stat-card small { color: var(--text-tertiary); font-size: 0.61rem; }
 .stat-card.warning { border-color: color-mix(in srgb, var(--warning) 26%, transparent); background: var(--warning-soft); }
 .stat-card.warning strong { color: var(--warning); }
+.provider-table-wrap { width: 100%; overflow-x: auto; }
+.provider-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+.provider-table th, .provider-table td { padding: 0.76rem 1.15rem; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+.provider-table tr:last-child th, .provider-table tr:last-child td { border-bottom: 0; }
+.provider-table thead th { color: var(--text-tertiary); background: color-mix(in srgb, var(--surface-subtle) 24%, transparent); font-size: 0.61rem; font-weight: 680; letter-spacing: 0.025em; }
+.provider-table th:first-child { width: 100%; text-align: left; }
+.provider-table tbody th { color: var(--text); font-weight: 620; }
+.provider-name { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+.provider-count { min-width: 2.4rem; display: inline-block; padding: 0.16rem 0.46rem; border-radius: 999px; text-align: center; }
+.provider-count.enabled { color: var(--success); background: var(--success-soft); }
+.provider-count.disabled { color: var(--danger); background: var(--danger-soft); }
+.provider-empty { margin: 0; padding: 1.4rem 1.15rem; color: var(--text-tertiary); font-size: 0.72rem; }
 .card { margin-bottom: 1rem; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-solid); box-shadow: 0 2px 9px rgba(0, 0, 0, 0.025); }
 .card-head { padding: 1.05rem 1.15rem 0.88rem; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface-subtle) 42%, transparent); }
 .card-head h2 { margin: 0; font-size: 0.86rem; letter-spacing: -0.012em; }

@@ -71,6 +71,11 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"function profileRulesConflict(rule, oppositeRules)",
 		"mutually-excluded",
 		"currentProfiles.has(profile) || !profileRulesConflict(profile, oppositeProfiles)",
+		"function keyAllowsProfile(key, profileID)",
+		"function providerAccessCounts()",
+		"Provider 访问计数",
+		"允许 / Enabled",
+		"拒绝 / Disabled",
 		":root",
 	} {
 		if !strings.Contains(body, expected) {
