@@ -233,9 +233,13 @@
   function translateText(value) {
     let text = String(value ?? "");
     if (currentLanguage === "zh-CN") {
+      const exact = ENGLISH_REPLACEMENTS_BY_TARGET.find(([, to]) => text === to);
+      if (exact) return exact[0];
       for (const [from, to] of ENGLISH_REPLACEMENTS_BY_TARGET) text = text.split(to).join(from);
       return text;
     }
+    const exact = ENGLISH_REPLACEMENTS_BY_SOURCE.find(([from]) => text === from);
+    if (exact) return exact[1];
     for (const [from, to] of ENGLISH_REPLACEMENTS_BY_SOURCE) text = text.split(from).join(to);
     text = text.replace(/^(\d+) 个当前 Key$/, "$1 current CPA keys")
       .replace(/^已匹配 (\d+) \/ (\d+) 个上游配置$/, "Matched $1 / $2 providers")
