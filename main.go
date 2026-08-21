@@ -126,7 +126,7 @@ func pluginRegistration() registration {
 			Name:             "Key Provider Access",
 			Version:          pluginVersion,
 			Author:           "local",
-			GitHubRepository: "",
+			GitHubRepository: "https://github.com/LTbinglingfeng/key-model-access",
 			Logo:             "",
 			ConfigFields: []configField{
 				{Name: "policy_file", Type: "string", Description: "Optional strict YAML or TOML v2 policy document. The Web UI initializes a default plugin-owned config.toml when omitted."},
