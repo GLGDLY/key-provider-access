@@ -188,6 +188,10 @@
     ["这些 caller scope 不对应 CPA 当前 Key。保存时会原样保留，不会静默删除；请在确认旧 Key 已永久移除后通过策略文件处理。", "These caller scopes do not correspond to current CPA keys. They are preserved when saving and are not silently deleted; remove them through the policy file only after confirming the old keys are permanently gone."],
     ["此 Key 将无法访问任何上游配置", "This key will not be able to access any provider"],
     ["自动包含未来新增上游配置", "Automatically includes future providers"],
+    ["全部上游配置（*，包含未来新增）", "All providers (*, including future additions)"],
+    ["* · 此 Key 将无法访问任何上游配置", "* · This key will not be able to access any provider"],
+    ["* · 自动包含未来新增上游配置", "* · Automatically includes future providers"],
+    ["当前仍在使用最后一个有效策略。", "The last valid policy is still in use."],
     ["Management Key 复用 CPAMC 已保存的同源会话；", "The Management Key reuses the saved same-origin CPAMC session; "],
     ["搜索上游配置…", "Search providers…"],
     ["全选可用配置", "Select all available"],
@@ -195,8 +199,18 @@
     ["已加载", "Loaded"],
     ["个上游配置", " providers"],
     ["策略已保存，但", "The policy was saved, but "],
+    ["CPA API Key 列表已变化；为避免策略错配，保存已中止。请刷新数据后重新检查规则。", "The CPA API key list changed; saving was stopped to avoid mismatched policies. Refresh the data and review the rules."],
+    ["CPA 内置 API Keys", "CPA built-in API keys"],
+    ["搜索允许上游配置", "Search allowed providers"],
+    ["搜索拒绝上游配置", "Search denied providers"],
+    ["没有可用的上游配置目录。", "No provider catalog is available."],
+    ["此 Key 将无法访问任何上游配置", "This key will not be able to access any provider"],
+    ["自动包含未来新增上游配置", "Automatically includes future providers"],
     ["完整下游 CPA Key 仅在内存中用于计算 caller scope 和生成首尾脱敏显示，不会写入策略、DOM、浏览器存储或 URL。上游凭据仅在内存中用于复现 CPA profile ID，不会写入策略、DOM、浏览器存储或 URL。", "The complete downstream CPA key exists only in memory to calculate the caller scope and head/tail mask; it is never written to policy, the DOM, browser storage, or the URL. Upstream provider inputs are used only in memory to reproduce CPA profile IDs and are never written to policy, the DOM, browser storage, or the URL."]
   ];
+
+  const ENGLISH_REPLACEMENTS_BY_SOURCE = [...ENGLISH_REPLACEMENTS].sort((left, right) => right[0].length - left[0].length);
+  const ENGLISH_REPLACEMENTS_BY_TARGET = [...ENGLISH_REPLACEMENTS].sort((left, right) => right[1].length - left[1].length);
 
   function normalizeLanguage(value) {
     const language = String(value || "").trim().toLowerCase();
@@ -219,10 +233,10 @@
   function translateText(value) {
     let text = String(value ?? "");
     if (currentLanguage === "zh-CN") {
-      for (const [from, to] of ENGLISH_REPLACEMENTS) text = text.split(to).join(from);
+      for (const [from, to] of ENGLISH_REPLACEMENTS_BY_TARGET) text = text.split(to).join(from);
       return text;
     }
-    for (const [from, to] of ENGLISH_REPLACEMENTS) text = text.split(from).join(to);
+    for (const [from, to] of ENGLISH_REPLACEMENTS_BY_SOURCE) text = text.split(from).join(to);
     text = text.replace(/^(\d+) 个当前 Key$/, "$1 current CPA keys")
       .replace(/^已匹配 (\d+) \/ (\d+) 个上游配置$/, "Matched $1 / $2 providers")
       .replace(/^从 (\d+) 个上游配置中选择$/, "Select from $1 providers")
