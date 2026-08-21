@@ -178,6 +178,20 @@
     ["保存响应超时，但已重新读取并确认提交成功", "The save response timed out, but a reread confirmed the submission succeeded"],
     ["保存结果无法确认；本地修改已保留，请刷新后核对。", "The save result could not be confirmed; local changes were kept. Refresh and check."],
     ["策略已重载，但界面刷新失败：", "The policy reloaded, but the page could not refresh: "],
+    ["CPA 已保存插件配置，但等待策略文件生效超时。", "CPA saved the plugin configuration, but the policy file did not become effective before the timeout."],
+    ["正在验证 CPAMC 已保存的连接信息并加载上游配置策略…", "Validating the saved CPAMC connection and loading provider access policies…"],
+    ["未配置 policy_file，无法从文件重载", "No policy_file is configured; reload from file is unavailable"],
+    ["SHA-256 指纹", "SHA-256 fingerprint"],
+    ["允许 / Enabled", "Allowed / Enabled"],
+    ["拒绝 / Disabled", "Denied / Disabled"],
+    ["最近一次配置存在问题：", "The most recent configuration has a problem:"],
+    ["这些 caller scope 不对应 CPA 当前 Key。保存时会原样保留，不会静默删除；请在确认旧 Key 已永久移除后通过策略文件处理。", "These caller scopes do not correspond to current CPA keys. They are preserved when saving and are not silently deleted; remove them through the policy file only after confirming the old keys are permanently gone."],
+    ["此 Key 将无法访问任何上游配置", "This key will not be able to access any provider"],
+    ["自动包含未来新增上游配置", "Automatically includes future providers"],
+    ["Management Key 复用 CPAMC 已保存的同源会话；", "The Management Key reuses the saved same-origin CPAMC session; "],
+    ["搜索上游配置…", "Search providers…"],
+    ["全选可用配置", "Select all available"],
+    ["CPA 已保存插件配置，但等待策略文件生效超时。", "CPA saved the plugin configuration, but the policy file did not become effective before the timeout."],
     ["已加载", "Loaded"],
     ["个上游配置", " providers"],
     ["策略已保存，但", "The policy was saved, but "],
@@ -223,6 +237,8 @@
       .replace(/^当前匹配 (\d+) 个上游配置，并覆盖未来同前缀上游配置$/, "Matches $1 providers and future providers with the same prefix")
       .replace(/^已保留 (\d+) 条现有规则$/, "$1 existing rules retained")
       .replace(/^已匹配 (\d+) \/ (\d+)$/, "Matched $1 / $2")
+      .replace(/^(\d+) 条失效策略：$/, "$1 stale policies:")
+      .replace(/^搜索(.+)$/, "Search $1")
       .replace(/^策略 (\d+) 格式无效。$/, "Policy $1 has an invalid format.")
       .replace(/^策略 (\d+) 的 caller scope 无效。$/, "Policy $1 has an invalid caller scope.")
       .replace(/^策略 (\d+) 的 caller scope 重复。$/, "Policy $1 has a duplicate caller scope.")
