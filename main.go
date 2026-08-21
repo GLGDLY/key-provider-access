@@ -99,8 +99,12 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			return nil, err
 		}
 		return okEnvelope(pluginRegistration())
-	case methodRequestInterceptBefore, methodRequestInterceptAfter:
-		return interceptRequest(request)
+	case methodRequestInterceptBefore:
+		return interceptRequest(request, false)
+	case methodRequestInterceptAfter:
+		return interceptRequest(request, true)
+	case methodSchedulerPick:
+		return pickProfile(request)
 	case methodManagementRegister:
 		return okEnvelope(managementRegistration())
 	case methodManagementHandle:
@@ -119,19 +123,20 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: registrationSchema,
 		Metadata: metadata{
-			Name:             "Key Model Access",
+			Name:             "Key Provider Access",
 			Version:          pluginVersion,
-			Author:           "Supra4E8C",
-			GitHubRepository: "https://github.com/LTbinglingfeng/key-model-access",
+			Author:           "local",
+			GitHubRepository: "",
 			Logo:             "",
 			ConfigFields: []configField{
 				{Name: "policy_file", Type: "string", Description: "Optional strict YAML or TOML v2 policy document. The Web UI initializes a default plugin-owned config.toml when omitted."},
 				{Name: "version", Type: "number", Description: "Inline policy schema version. Only version 2 is supported."},
-				{Name: "policies", Type: "array", Description: "Per-caller-scope allow_models and deny_models policies. caller_scope is derived by CPA's built-in API-key authentication."},
+				{Name: "policies", Type: "array", Description: "Per-caller-scope allow_profiles and deny_profiles policies. caller_scope is derived by CPA's built-in API-key authentication."},
 			},
 		},
 		Capabilities: capabilities{
 			RequestInterceptor: hostSchema >= schemaVersion,
+			Scheduler:          true,
 			ManagementAPI:      true,
 		},
 	}

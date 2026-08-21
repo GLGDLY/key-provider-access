@@ -7,20 +7,20 @@ plugins:
   enabled: true
   dir: "plugins"
   configs:
-    key-model-access:
+    key-provider-access:
       enabled: true
       priority: 100
 
-      # Safe default: use an inline, empty v2 document. Authenticated CPA keys
-      # without a policy are allowed to use all interceptor-covered models.
+      # Safe default: authenticated CPA keys without a policy may use every
+      # upstream auth profile currently eligible for the requested route.
       version: 2
       policies: []
 
       # Persistence is initialized automatically the first time the Web UI opens:
-      # <plugins.dir>/key-model-access/config.toml is created, then this plugin
+      # <plugins.dir>/key-provider-access/config.toml is created, then this plugin
       # config is patched with policy_file through CPA's Management API.
       #
       # Optional explicit override (YAML and TOML are supported). The target must
       # already contain a valid v2 policy document; a missing/invalid explicit
       # policy_file fails closed. Relative paths use CLIProxyAPI's working directory.
-      # policy_file: "config/key-model-access-policies.yaml"
+      # policy_file: "config/key-provider-access-policies.yaml"

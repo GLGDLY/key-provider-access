@@ -1,4 +1,4 @@
-module github.com/LTbinglingfeng/key-model-access
+module key-provider-access
 
 go 1.24.0
 

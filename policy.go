@@ -36,14 +36,14 @@ type policyDocument struct {
 }
 
 type policyConfig struct {
-	CallerScope string   `json:"caller_scope" yaml:"caller_scope" toml:"caller_scope"`
-	AllowModels []string `json:"allow_models" yaml:"allow_models" toml:"allow_models"`
-	DenyModels  []string `json:"deny_models" yaml:"deny_models" toml:"deny_models"`
+	CallerScope   string   `json:"caller_scope" yaml:"caller_scope" toml:"caller_scope"`
+	AllowProfiles []string `json:"allow_profiles" yaml:"allow_profiles" toml:"allow_profiles"`
+	DenyProfiles  []string `json:"deny_profiles" yaml:"deny_profiles" toml:"deny_profiles"`
 }
 
 type runtimePolicy struct {
-	AllowModels []string
-	DenyModels  []string
+	AllowProfiles []string
+	DenyProfiles  []string
 }
 
 type policySnapshot struct {
@@ -61,10 +61,11 @@ type state struct {
 	hasValidPolicy bool
 	lastError      string
 	revision       uint64
+	pickCursor     map[string]uint64
 }
 
 var (
-	globalState = state{snapshot: failClosedSnapshot()}
+	globalState = state{snapshot: failClosedSnapshot(), pickCursor: make(map[string]uint64)}
 	mutationMu  sync.Mutex
 )
 
@@ -83,6 +84,7 @@ func (s *state) clear() {
 	s.hasValidPolicy = false
 	s.lastError = ""
 	s.revision = 0
+	s.pickCursor = make(map[string]uint64)
 }
 
 func (s *state) current() (pluginConfig, policySnapshot, string, time.Time, uint32, string) {
@@ -195,9 +197,9 @@ func clonePolicyConfigs(policies []policyConfig) []policyConfig {
 	cloned := make([]policyConfig, len(policies))
 	for index, policy := range policies {
 		cloned[index] = policyConfig{
-			CallerScope: policy.CallerScope,
-			AllowModels: append([]string{}, policy.AllowModels...),
-			DenyModels:  append([]string{}, policy.DenyModels...),
+			CallerScope:   policy.CallerScope,
+			AllowProfiles: append([]string{}, policy.AllowProfiles...),
+			DenyProfiles:  append([]string{}, policy.DenyProfiles...),
 		}
 	}
 	return cloned
@@ -285,17 +287,17 @@ func compileDocument(document policyDocument) (policySnapshot, policyDocument, e
 			return policySnapshot{}, policyDocument{}, fmt.Errorf("duplicate caller_scope at policies[%d]", index)
 		}
 		var err error
-		item.AllowModels, err = normalizePatterns(item.AllowModels, fmt.Sprintf("policies[%d].allow_models", index))
+		item.AllowProfiles, err = normalizePatterns(item.AllowProfiles, fmt.Sprintf("policies[%d].allow_profiles", index))
 		if err != nil {
 			return policySnapshot{}, policyDocument{}, err
 		}
-		item.DenyModels, err = normalizePatterns(item.DenyModels, fmt.Sprintf("policies[%d].deny_models", index))
+		item.DenyProfiles, err = normalizePatterns(item.DenyProfiles, fmt.Sprintf("policies[%d].deny_profiles", index))
 		if err != nil {
 			return policySnapshot{}, policyDocument{}, err
 		}
 		snapshot.ByCallerScope[item.CallerScope] = runtimePolicy{
-			AllowModels: append([]string(nil), item.AllowModels...),
-			DenyModels:  append([]string(nil), item.DenyModels...),
+			AllowProfiles: append([]string(nil), item.AllowProfiles...),
+			DenyProfiles:  append([]string(nil), item.DenyProfiles...),
 		}
 	}
 	return snapshot, document, nil
@@ -335,22 +337,45 @@ func callerScope(rawKey string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func policyAllows(policy runtimePolicy, model string) bool {
-	model = strings.TrimSpace(model)
-	for _, pattern := range policy.DenyModels {
-		if wildcardMatch(pattern, model) {
+func policyAllows(policy runtimePolicy, profile string) bool {
+	return policyAllowsCandidate(policy, profile, "")
+}
+
+func policyAllowsCandidate(policy runtimePolicy, profile, provider string) bool {
+	profile = strings.TrimSpace(profile)
+	_ = provider
+	matches := func(pattern string) bool {
+		return wildcardMatch(pattern, profile)
+	}
+	for _, pattern := range policy.DenyProfiles {
+		if matches(pattern) {
 			return false
 		}
 	}
-	if len(policy.AllowModels) == 0 {
+	if len(policy.AllowProfiles) == 0 {
 		return true
 	}
-	for _, pattern := range policy.AllowModels {
-		if wildcardMatch(pattern, model) {
+	for _, pattern := range policy.AllowProfiles {
+		if matches(pattern) {
 			return true
 		}
 	}
 	return false
+}
+
+func (s *state) nextProfile(scope, provider, model string, candidates []schedulerAuthCandidate) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	key := scope + "\x00" + strings.ToLower(strings.TrimSpace(provider)) + "\x00" + strings.TrimSpace(model)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pickCursor == nil {
+		s.pickCursor = make(map[string]uint64)
+	}
+	cursor := s.pickCursor[key]
+	s.pickCursor[key] = cursor + 1
+	return candidates[cursor%uint64(len(candidates))].ID
 }
 
 // wildcardMatch supports shell-style '*' and '?' while allowing '*' to cross '/'.
@@ -407,7 +432,7 @@ func writePolicyFile(path string, document policyDocument) error {
 			return fmt.Errorf("create policy directory: %w", err)
 		}
 	}
-	temporary, err := os.CreateTemp(dir, ".key-model-access-*.tmp")
+	temporary, err := os.CreateTemp(dir, ".key-provider-access-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary policy file: %w", err)
 	}

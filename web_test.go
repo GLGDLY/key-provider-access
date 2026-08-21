@@ -52,13 +52,14 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"is-embedded",
 		"const PATHS",
 		"/v0/management/api-keys",
-		"/v1/models",
+		"/v0/management/auth-files",
+		"/v0/management/openai-compatibility",
 		"/initialize-storage",
-		"/v0/management/plugins/key-model-access/config",
+		"/v0/management/plugins/key-provider-access/config",
 		"plugins_dir",
 		"cli-proxy-auth",
 		"cli-proxy-theme",
-		"class=\"model-trigger",
+		"class=\"profile-trigger",
 		"<progress class=\"selection-meter\"",
 		"state.pendingDraft = serializablePolicy()",
 		"const commonWildcards",
@@ -75,7 +76,7 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"credential",
 		"delete-key",
 		"default_action",
-		"models_endpoint",
+		"profiles_endpoint",
 		"allow_query_keys",
 		"id=\"managementKey\"",
 		"id=\"authForm\"",
@@ -147,9 +148,9 @@ func TestManagementPoliciesReturnsSafeV2DocumentWhenFailClosed(t *testing.T) {
 }
 
 func TestPolicyRevisionRejectsStaleWrites(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: scopeA, AllowModels: []string{"*"}}}})
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: scopeA, AllowProfiles: []string{"*"}}}})
 	initialRevision := globalState.policyRevision()
-	body := []byte(`{"version":2,"policies":[{"caller_scope":"` + scopeB + `","allow_models":["gpt-*"],"deny_models":[]}]}`)
+	body := []byte(`{"version":2,"policies":[{"caller_scope":"` + scopeB + `","allow_profiles":["gpt-*"],"deny_profiles":[]}]}`)
 
 	raw, err := managementReplacePolicies(body, etagForRevision(initialRevision))
 	if err != nil {

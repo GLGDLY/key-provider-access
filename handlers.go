@@ -15,31 +15,26 @@ import (
 )
 
 const (
-	policiesPath          = "/v0/management/plugins/key-model-access/policies"
-	statusPath            = "/v0/management/plugins/key-model-access/status"
-	reloadPath            = "/v0/management/plugins/key-model-access/reload"
-	initializeStoragePath = "/v0/management/plugins/key-model-access/initialize-storage"
-	settingsResourcePath  = "/v0/resource/plugins/key-model-access/settings"
+	policiesPath          = "/v0/management/plugins/key-provider-access/policies"
+	statusPath            = "/v0/management/plugins/key-provider-access/status"
+	reloadPath            = "/v0/management/plugins/key-provider-access/reload"
+	initializeStoragePath = "/v0/management/plugins/key-provider-access/initialize-storage"
+	settingsResourcePath  = "/v0/resource/plugins/key-provider-access/settings"
 )
 
-func interceptRequest(raw []byte) ([]byte, error) {
+func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	var req requestInterceptRequest
 	if err := decodeJSON(raw, &req); err != nil {
 		return nil, err
 	}
-	model := strings.TrimSpace(req.RequestedModel)
-	if model == "" {
-		model = strings.TrimSpace(req.Model)
-	}
-
 	_, snapshot, _, _, _, _ := globalState.current()
 	if snapshot.BlockAll {
-		return terminatedPolicyResponse(http.StatusForbidden, "model access policy is unavailable", model)
+		return terminatedPolicyResponse(http.StatusForbidden, "profile access policy is unavailable", "")
 	}
 
 	scope, hasScope := callerScopeFromMetadata(req.Metadata)
 	if len(snapshot.ByCallerScope) > 0 && !hasScope {
-		return terminatedPolicyResponse(http.StatusForbidden, "model access identity is unavailable", model)
+		return terminatedPolicyResponse(http.StatusForbidden, "profile access identity is unavailable", "")
 	}
 	if !hasScope {
 		return okEnvelope(requestInterceptResponse{})
@@ -48,13 +43,55 @@ func interceptRequest(raw []byte) ([]byte, error) {
 	if !configured {
 		return okEnvelope(requestInterceptResponse{})
 	}
-	if model == "" {
-		return terminatedPolicyResponse(http.StatusForbidden, "requested model is unavailable for policy evaluation", "")
+	if !afterAuth {
+		return okEnvelope(requestInterceptResponse{})
 	}
-	if !policyAllows(policy, model) {
-		return terminatedPolicyResponse(http.StatusForbidden, "model is not allowed for this API key", model)
+	profile, _ := req.Metadata["selected_auth_id"].(string)
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return terminatedPolicyResponse(http.StatusForbidden, "selected profile is unavailable for policy evaluation", "")
+	}
+	if !policyAllows(policy, profile) {
+		return terminatedPolicyResponse(http.StatusForbidden, "profile is not allowed for this API key", profile)
 	}
 	return okEnvelope(requestInterceptResponse{})
+}
+
+func pickProfile(raw []byte) ([]byte, error) {
+	var req schedulerPickRequest
+	if err := decodeJSON(raw, &req); err != nil {
+		return nil, err
+	}
+	_, snapshot, _, _, _, _ := globalState.current()
+	if snapshot.BlockAll {
+		return errorEnvelope("profile_policy_unavailable", "profile access policy is unavailable", http.StatusForbidden), nil
+	}
+	scope, hasScope := callerScopeFromMetadata(req.Options.Metadata)
+	if len(snapshot.ByCallerScope) > 0 && !hasScope {
+		return errorEnvelope("profile_identity_unavailable", "profile access identity is unavailable", http.StatusForbidden), nil
+	}
+	policy, configured := snapshot.ByCallerScope[scope]
+	if !configured {
+		return okEnvelope(schedulerPickResponse{Handled: false})
+	}
+	eligible := make([]schedulerAuthCandidate, 0, len(req.Candidates))
+	for _, candidate := range req.Candidates {
+		candidate.ID = strings.TrimSpace(candidate.ID)
+		if candidate.ID != "" && policyAllowsCandidate(policy, candidate.ID, candidate.Provider) {
+			eligible = append(eligible, candidate)
+		}
+	}
+	if len(eligible) == 0 {
+		return errorEnvelope("profile_access_denied", "no allowed upstream profile is available for this API key", http.StatusForbidden), nil
+	}
+	provider := req.Provider
+	if provider == "" {
+		provider = strings.Join(req.Providers, ",")
+	}
+	return okEnvelope(schedulerPickResponse{
+		AuthID:  globalState.nextProfile(scope, provider, req.Model, eligible),
+		Handled: true,
+	})
 }
 
 func callerScopeFromMetadata(metadata map[string]any) (string, bool) {
@@ -66,13 +103,13 @@ func callerScopeFromMetadata(metadata map[string]any) (string, bool) {
 	return scope, validSHA256(scope)
 }
 
-func terminatedPolicyResponse(status int, message, model string) ([]byte, error) {
+func terminatedPolicyResponse(status int, message, profile string) ([]byte, error) {
 	details := map[string]any{
-		"type":    "model_access_denied",
+		"type":    "profile_access_denied",
 		"message": message,
 	}
-	if model != "" {
-		details["model"] = model
+	if profile != "" {
+		details["profile"] = profile
 	}
 	body, err := json.Marshal(map[string]any{"error": details})
 	if err != nil {
@@ -89,16 +126,16 @@ func terminatedPolicyResponse(status int, message, model string) ([]byte, error)
 func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodGet, Path: statusPath, Description: "Show key-model-access status without exposing API keys or caller scopes."},
-			{Method: http.MethodGet, Path: policiesPath, Description: "List caller-scope model policies."},
-			{Method: http.MethodPut, Path: policiesPath, Description: "Replace all caller-scope model policies."},
+			{Method: http.MethodGet, Path: statusPath, Description: "Show key-provider-access status without exposing API keys or caller scopes."},
+			{Method: http.MethodGet, Path: policiesPath, Description: "List caller-scope profile policies."},
+			{Method: http.MethodPut, Path: policiesPath, Description: "Replace all caller-scope profile policies."},
 			{Method: http.MethodPost, Path: reloadPath, Description: "Reload policies from policy_file."},
 			{Method: http.MethodPost, Path: initializeStoragePath, Description: "Create or validate the default plugin-owned TOML policy file."},
 		},
 		Resources: []resourceRoute{{
 			Path:        "/settings",
-			Menu:        "模型权限",
-			Description: "Manage per-key model access policies in a browser.",
+			Menu:        "上游配置权限",
+			Description: "Manage per-key profile access policies in a browser.",
 		}},
 	}
 }
@@ -245,7 +282,7 @@ func managementInitializeStorage(body []byte) ([]byte, error) {
 	}
 	pluginsDir = filepath.Clean(pluginsDir)
 	if !pluginBinaryExists(pluginsDir) {
-		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": "plugins_dir does not contain the installed key-model-access binary"})
+		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": "plugins_dir does not contain the installed key-provider-access binary"})
 	}
 	policyDir := filepath.Join(pluginsDir, pluginID)
 	if info, errStat := os.Lstat(policyDir); errStat == nil {

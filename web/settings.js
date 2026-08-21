@@ -2,14 +2,21 @@
   "use strict";
 
   const PATHS = {
-    status: "/v0/management/plugins/key-model-access/status",
-    policies: "/v0/management/plugins/key-model-access/policies",
-    reload: "/v0/management/plugins/key-model-access/reload",
-    initializeStorage: "/v0/management/plugins/key-model-access/initialize-storage",
+    status: "/v0/management/plugins/key-provider-access/status",
+    policies: "/v0/management/plugins/key-provider-access/policies",
+    reload: "/v0/management/plugins/key-provider-access/reload",
+    initializeStorage: "/v0/management/plugins/key-provider-access/initialize-storage",
     pluginList: "/v0/management/plugins",
-    pluginConfig: "/v0/management/plugins/key-model-access/config",
+    pluginConfig: "/v0/management/plugins/key-provider-access/config",
     apiKeys: "/v0/management/api-keys",
-    models: "/v1/models"
+    authFiles: "/v0/management/auth-files",
+    geminiKeys: "/v0/management/gemini-api-key",
+    interactionsKeys: "/v0/management/interactions-api-key",
+    claudeKeys: "/v0/management/claude-api-key",
+    codexKeys: "/v0/management/codex-api-key",
+    xaiKeys: "/v0/management/xai-api-key",
+    openAICompatibility: "/v0/management/openai-compatibility",
+    vertexKeys: "/v0/management/vertex-api-key"
   };
 
   const CPAMC_AUTH_KEY = "cli-proxy-auth";
@@ -34,15 +41,15 @@
     token: "",
     status: null,
     keys: [],
-    models: [],
-    modelsError: "",
+    profiles: [],
+    profilesError: "",
     persistenceSetupError: "",
     stalePolicies: [],
     revision: 0,
     selectedIndex: -1,
     dirty: false,
     busy: false,
-    modelBusy: false,
+    profileBusy: false,
     sessionBusy: false,
     sessionEnded: false,
     pendingDraft: null,
@@ -106,14 +113,18 @@
     }
   }
 
-  function normalizeModels(value) {
+  function normalizeProfiles(value) {
     if (!Array.isArray(value)) return [];
-    return [...new Set(value.map((model) => String(model).trim()).filter(Boolean))];
+    return [...new Set(value.map((profile) => String(profile).trim()).filter(Boolean))];
   }
 
-  function modelPatternMatches(pattern, model) {
+  function profilePatternMatches(pattern, profile) {
     const source = String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-    try { return new RegExp(`^${source}$`).test(model); } catch (_) { return false; }
+    try { return new RegExp(`^${source}$`).test(profile); } catch (_) { return false; }
+  }
+
+  function profileRuleMatches(pattern, profile) {
+    return profilePatternMatches(pattern, profile.id);
   }
 
   function normalizePolicyDocument(raw) {
@@ -127,15 +138,15 @@
       if (!/^[0-9a-f]{64}$/.test(scope)) throw new Error(`策略 ${index + 1} 的 caller scope 无效。`);
       if (seen.has(scope)) throw new Error(`策略 ${index + 1} 的 caller scope 重复。`);
       seen.add(scope);
-      for (const field of ["allow_models", "deny_models"]) {
-        if (!Array.isArray(item[field]) || item[field].some((model) => typeof model !== "string" || !model.trim())) {
+      for (const field of ["allow_profiles", "deny_profiles"]) {
+        if (!Array.isArray(item[field]) || item[field].some((profile) => typeof profile !== "string" || !profile.trim())) {
           throw new Error(`策略 ${index + 1} 的 ${field} 无效。`);
         }
       }
       return {
         caller_scope: scope,
-        allow_models: normalizeModels(item.allow_models),
-        deny_models: normalizeModels(item.deny_models)
+        allow_profiles: normalizeProfiles(item.allow_profiles),
+        deny_profiles: normalizeProfiles(item.deny_profiles)
       };
     });
     return { version: 2, policies };
@@ -253,41 +264,80 @@
     return stateWords.map((word) => word.toString(16).padStart(8, "0")).join("");
   }
 
-  async function fetchModelCatalog(apiKey) {
-    if (!apiKey) return { models: [], error: "CPA 当前没有可用于读取模型目录的 API Key。" };
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 12000);
+  async function fetchProfileCatalog() {
+    const endpoints = [
+      [PATHS.authFiles, "files"],
+      [PATHS.geminiKeys, "gemini-api-key"],
+      [PATHS.interactionsKeys, "interactions-api-key"],
+      [PATHS.claudeKeys, "claude-api-key"],
+      [PATHS.codexKeys, "codex-api-key"],
+      [PATHS.xaiKeys, "xai-api-key"],
+      [PATHS.openAICompatibility, "openai-compatibility"],
+      [PATHS.vertexKeys, "vertex-api-key"]
+    ];
     try {
-      const response = await fetch(PATHS.models, {
-        method: "GET",
-        headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
-        signal: controller.signal,
-        cache: "no-store"
-      });
-      let payload = null;
-      try { payload = await response.json(); } catch (_) { payload = null; }
-      if (!response.ok) throw new Error(`模型目录请求失败（HTTP ${response.status}）`);
-      const source = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+      const payloads = await Promise.all(endpoints.map(([path]) => api(path, { method: "GET" })));
+      const lists = new Map(endpoints.map(([, field], index) => [field, Array.isArray(payloads[index]?.[field]) ? payloads[index][field] : []]));
+      const profiles = [];
       const seen = new Set();
-      const models = source.map((item) => {
-        if (typeof item === "string") return { id: item, displayName: "" };
-        if (!item || typeof item !== "object") return null;
-        const id = String(item.id ?? item.name ?? item.model ?? item.value ?? "").trim();
-        const displayName = String(item.display_name ?? item.displayName ?? item.alias ?? "").trim();
-        return id ? { id, displayName: displayName === id ? "" : displayName } : null;
-      }).filter((item) => {
-        if (!item) return false;
-        const key = item.id.toLowerCase();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      }).sort((left, right) => left.id.localeCompare(right.id));
-      return { models, error: models.length ? "" : "CPA 的 /v1/models 暂未返回可用模型。" };
+      const counters = new Map();
+      const add = (id, provider, displayName, kind) => {
+        id = String(id || "").trim();
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        profiles.push({ id, provider: String(provider || "").trim(), displayName: String(displayName || "").trim(), kind });
+      };
+      const nextID = async (kind, ...parts) => {
+        const digest = await sha256Hex([kind, ...parts.map((part) => String(part || "").trim())].join("\0"));
+        const base = `${kind}:${digest.slice(0, 12)}`;
+        const count = counters.get(base) || 0;
+        counters.set(base, count + 1);
+        return count ? `${base}-${count}` : base;
+      };
+
+      for (const item of lists.get("files")) {
+        const provider = String(item?.provider ?? item?.type ?? "").trim();
+        const label = String(item?.label ?? item?.email ?? item?.account ?? item?.name ?? "OAuth profile").trim();
+        add(item?.id, provider, `${label} · ${provider || "OAuth"}`, "oauth");
+      }
+      const addSimple = async (field, kind, provider) => {
+        for (const item of lists.get(field)) {
+		  if (!String(item?.["api-key"] || "").trim()) continue;
+          const id = await nextID(kind, item?.["api-key"], item?.["base-url"]);
+          add(id, provider, `${provider} API provider`, "api");
+        }
+      };
+      await addSimple("gemini-api-key", "gemini:apikey", "gemini");
+      await addSimple("interactions-api-key", "gemini-interactions:apikey", "gemini-interactions");
+      await addSimple("claude-api-key", "claude:apikey", "claude");
+      await addSimple("codex-api-key", "codex:apikey", "codex");
+      await addSimple("xai-api-key", "xai:apikey", "xai");
+
+      for (const item of lists.get("openai-compatibility")) {
+        if (item?.disabled) continue;
+        const name = String(item?.name || "openai-compatibility").trim().toLowerCase();
+        const provider = !name || name === "openai-compatibility" || name.startsWith("openai-compatible-") ? (name || "openai-compatibility") : `openai-compatible-${name}`;
+        const kind = `openai-compatibility:${name || "openai-compatibility"}`;
+        const entries = Array.isArray(item?.["api-key-entries"]) ? item["api-key-entries"] : [];
+        if (entries.length) {
+          for (const entry of entries) {
+            const id = await nextID(kind, entry?.["api-key"], item?.["base-url"], entry?.["proxy-url"]);
+            add(id, provider, `${item?.name || provider} API provider`, "api");
+          }
+        } else {
+          const id = await nextID(kind, item?.["base-url"]);
+          add(id, provider, `${item?.name || provider} API provider`, "api");
+        }
+      }
+      for (const item of lists.get("vertex-api-key")) {
+        const id = await nextID("vertex:apikey", item?.["api-key"], item?.["base-url"], item?.["proxy-url"]);
+        add(id, "vertex", "vertex API provider", "api");
+      }
+
+      profiles.sort((left, right) => left.provider.localeCompare(right.provider) || left.id.localeCompare(right.id));
+      return { profiles, error: profiles.length ? "" : "CPA 当前没有可用的 OAuth 或 API provider 配置。" };
     } catch (error) {
-      const message = error.name === "AbortError" ? "模型目录加载超时。" : error.message;
-      return { models: [], error: message || "模型目录加载失败。" };
-    } finally {
-      window.clearTimeout(timer);
+      return { profiles: [], error: error.message || "上游配置目录加载失败。" };
     }
   }
 
@@ -301,7 +351,7 @@
     try {
       const [scopes, catalog] = await Promise.all([
         Promise.all(normalizedValues.map((value) => sha256Hex(`cli-proxy-api:caller-scope:v1\0${value}`))),
-        options.includeCatalog ? fetchModelCatalog(normalizedValues[0] || "") : Promise.resolve(null)
+        options.includeCatalog ? fetchProfileCatalog() : Promise.resolve(null)
       ]);
       const seen = new Set();
       const keys = scopes.filter((scope) => {
@@ -312,8 +362,8 @@
         scope,
         fingerprint: shortFingerprint(scope),
         mask: "••••••••••••",
-        allow_models: [],
-        deny_models: []
+        allow_profiles: [],
+        deny_profiles: []
       }));
       return options.includeCatalog ? { keys, catalog } : keys;
     } finally {
@@ -381,20 +431,20 @@
       const policy = byScope.get(key.scope);
       return {
         ...key,
-        allow_models: policy ? [...policy.allow_models] : [],
-        deny_models: policy ? [...policy.deny_models] : []
+        allow_profiles: policy ? [...policy.allow_profiles] : [],
+        deny_profiles: policy ? [...policy.deny_profiles] : []
       };
     });
     state.stalePolicies = documentValue.policies
       .filter((policy) => !currentScopes.has(policy.caller_scope))
-      .map((policy) => ({ ...policy, allow_models: [...policy.allow_models], deny_models: [...policy.deny_models] }));
+      .map((policy) => ({ ...policy, allow_profiles: [...policy.allow_profiles], deny_profiles: [...policy.deny_profiles] }));
   }
 
   function installRemoteData(remote, preferredScope = "") {
     state.status = remote.status;
     state.keys = remote.keys;
-    state.models = remote.catalog?.models || [];
-    state.modelsError = remote.catalog?.error || "";
+    state.profiles = remote.catalog?.profiles || [];
+    state.profilesError = remote.catalog?.error || "";
     state.persistenceSetupError = remote.persistenceSetupError || "";
     applyPolicyDocument(remote.policies?.policy);
     state.revision = Number(remote.policies?.revision ?? remote.status?.revision ?? 0);
@@ -423,7 +473,7 @@
     }
     state.token = token;
     state.sessionBusy = true;
-    setSessionState("loading", "正在接入管理会话", "正在验证 CPAMC 已保存的连接信息并加载模型策略…");
+    setSessionState("loading", "正在接入管理会话", "正在验证 CPAMC 已保存的连接信息并加载上游配置策略…");
     try {
       const remote = await fetchRemoteData();
       const pendingDraft = state.pendingDraft;
@@ -451,7 +501,7 @@
   }
 
   function finalizeEndedSession() {
-    if (!state.sessionEnded || state.busy || state.modelBusy) return;
+    if (!state.sessionEnded || state.busy || state.profileBusy) return;
     const hadDraft = state.dirty;
     if (hadDraft) {
       state.pendingDraft = serializablePolicy();
@@ -460,7 +510,7 @@
     state.token = "";
     state.status = null;
     state.keys = [];
-    state.models = [];
+    state.profiles = [];
     state.stalePolicies = [];
     state.dirty = false;
     state.sessionEnded = false;
@@ -474,9 +524,9 @@
   function setBusy(busy, action = "") {
     state.busy = busy;
     $("#workspace").inert = busy;
-    refreshDataButton.disabled = busy || state.modelBusy;
-    saveButton.disabled = busy || state.modelBusy || !state.dirty;
-    reloadButton.disabled = busy || state.modelBusy || !state.status?.persistent_updates;
+    refreshDataButton.disabled = busy || state.profileBusy;
+    saveButton.disabled = busy || state.profileBusy || !state.dirty;
+    reloadButton.disabled = busy || state.profileBusy || !state.status?.persistent_updates;
     saveButton.innerHTML = action === "save" && busy
       ? `${icons.spinner}<span class="label-long">正在保存</span>`
       : `${icons.save}<span class="label-long">${state.dirty ? "保存修改" : "已保存"}</span>`;
@@ -506,8 +556,8 @@
     const warning = state.status?.last_error;
     healthBadge.innerHTML = `<span class="status-dot ${warning ? "warning" : healthy ? "" : "error"}"></span><span>${escapeHTML(warning ? "策略警告" : healthy ? `Schema v${state.status.schema_version || 2}` : "未连接")}</span>`;
     healthBadge.title = warning ? state.status.last_error : "插件运行正常";
-    saveButton.disabled = state.busy || state.modelBusy || !state.dirty;
-    reloadButton.disabled = state.busy || state.modelBusy || !state.status?.persistent_updates;
+    saveButton.disabled = state.busy || state.profileBusy || !state.dirty;
+    reloadButton.disabled = state.busy || state.profileBusy || !state.status?.persistent_updates;
     reloadButton.title = state.status?.persistent_updates ? "从策略文件重载" : "未配置 policy_file，无法从文件重载";
     saveButton.innerHTML = `${icons.save}<span class="label-long">${state.dirty ? "保存修改" : "已保存"}</span>`;
     $("#policyCount").textContent = `${state.keys.length} 个当前 Key`;
@@ -564,7 +614,7 @@
   }
 
   function hasRules(key) {
-    return key.allow_models.length > 0 || key.deny_models.length > 0;
+    return key.allow_profiles.length > 0 || key.deny_profiles.length > 0;
   }
 
   function renderOverview() {
@@ -582,8 +632,8 @@
       <header class="editor-head">
         <div class="editor-title-wrap">
           <p class="editor-kicker">Access overview</p>
-          <h1>模型权限概览</h1>
-          <p class="editor-subtitle">API Key 的创建、删除和生命周期完全由 CPA 管理；此页面只为现有 Key 配置模型规则。</p>
+          <h1>上游配置权限概览</h1>
+          <p class="editor-subtitle">API Key 的创建、删除和生命周期完全由 CPA 管理；此页面只为现有 Key 配置上游配置规则。</p>
         </div>
       </header>
       ${statusWarning}
@@ -591,21 +641,21 @@
       <section class="overview-grid" aria-label="权限统计">
         ${statCard("当前 CPA Key", state.keys.length, "只读同步")}
         ${statCard("已配置", configured, "含 allow 或 deny")}
-        ${statCard("默认允许", defaults, "没有模型规则")}
+        ${statCard("默认允许", defaults, "没有上游配置规则")}
         ${statCard("失效策略", staleCount, "保存时仍保留", staleCount > 0)}
       </section>
       <section class="card">
-        <div class="card-head"><h2>认证边界</h2><p>Key 身份与模型授权相互分离。</p></div>
+        <div class="card-head"><h2>认证边界</h2><p>Key 身份与上游配置授权相互分离。</p></div>
         <div class="info-callout">
           <span class="callout-icon">${icons.key}</span>
-          <div><strong>认证由 CPA 内置 API Keys 管理</strong><p>插件仅接收 CPA 提供的 caller scope，并据此执行 allow_models 与 deny_models。未配置策略或规则为空时，默认允许全部模型。</p></div>
+          <div><strong>认证由 CPA 内置 API Keys 管理</strong><p>插件仅接收 CPA 提供的 caller scope，并据此执行 allow_profiles 与 deny_profiles。未配置策略或规则为空时，默认允许全部上游配置。</p></div>
         </div>
       </section>
       <section class="card">
         <div class="card-head"><h2>运行状态</h2><p>来自当前 CPA 插件实例。</p></div>
         ${statusRow("认证模式", displayAuthMode(state.status?.auth_mode))}
         ${statusRow("身份来源", state.status?.identity_source || "—")}
-        ${statusRow("未配置 Key", state.status?.unconfigured_key_action === "allow" ? "允许全部模型" : state.status?.unconfigured_key_action || "—")}
+        ${statusRow("未配置 Key", state.status?.unconfigured_key_action === "allow" ? "允许全部上游配置" : state.status?.unconfigured_key_action || "—")}
         ${statusRow("后端策略数", state.status?.policy_count ?? "—")}
         ${statusRow("策略版本", `rev-${state.revision}`)}
         ${statusRow("策略来源", state.status?.source || "—")}
@@ -635,75 +685,75 @@
           <p class="editor-subtitle key-summary"><span>${key.mask}</span><span class="mono">SHA-256 ${escapeHTML(key.fingerprint)}</span></p>
         </div>
       </header>
-      ${empty ? `<div class="default-notice">${icons.check}<span><strong>当前默认允许全部模型。</strong>从目录中选择允许或拒绝模型后才会为此 Key 写入策略。</span></div>` : ""}
+      ${empty ? `<div class="default-notice">${icons.check}<span><strong>当前默认允许全部上游配置。</strong>从目录中选择允许或拒绝上游配置后才会为此 Key 写入策略。</span></div>` : ""}
       <section class="card rules-card">
-        <div class="card-head"><h2>模型规则</h2><p>直接从 CPA 可用模型目录中选择；拒绝规则始终优先于允许规则。</p></div>
-        ${modelPicker("allow_models", "允许模型", "设置后，仅允许列表中的模型", key.allow_models, false)}
-        ${modelPicker("deny_models", "拒绝模型", "命中后始终拒绝访问", key.deny_models, true)}
+        <div class="card-head"><h2>上游配置规则</h2><p>直接从 CPA 可用上游配置目录中选择；拒绝规则始终优先于允许规则。</p></div>
+        ${profilePicker("allow_profiles", "允许上游配置", "设置后，仅允许列表中的上游配置", key.allow_profiles, false)}
+        ${profilePicker("deny_profiles", "拒绝上游配置", "命中后始终拒绝访问", key.deny_profiles, true)}
       </section>
-      <div class="privacy-note">Management Key 复用 CPAMC 已保存的同源会话；CPA API Key 只用于计算 caller scope 与读取模型目录，不会写入 DOM、浏览器存储或 URL。</div>`;
+      <div class="privacy-note">Management Key 复用 CPAMC 已保存的同源会话；下游 CPA Key 只用于计算 caller scope。上游凭据仅在内存中用于复现 CPA profile ID，不会写入策略、DOM、浏览器存储或 URL。</div>`;
     editor.dataset.keyIndex = String(index);
   }
 
-  function modelPicker(kind, title, description, selectedModels, deny) {
-    const selected = new Set(selectedModels);
-    const wildcardRules = selectedModels.filter((model) => model.includes("*") || model.includes("?"));
+  function profilePicker(kind, title, description, selectedProfiles, deny) {
+    const selected = new Set(selectedProfiles);
+    const wildcardRules = selectedProfiles.filter((profile) => profile.includes("*") || profile.includes("?"));
     const wildcardSelected = selected.has("*");
-    const matchedRuleFor = (model) => wildcardRules.find((rule) => modelPatternMatches(rule, model)) || "";
-    const effectiveCatalogCount = state.models.filter((model) => selected.has(model.id) || matchedRuleFor(model.id)).length;
+    const matchedRuleFor = (profile) => wildcardRules.find((rule) => profileRuleMatches(rule, profile)) || "";
+    const effectiveCatalogCount = state.profiles.filter((profile) => selected.has(profile.id) || matchedRuleFor(profile)).length;
     const isOpen = state.openPicker === kind;
     const summary = wildcardSelected
-      ? "全部模型（*，包含未来新增）"
-      : state.models.length
-        ? effectiveCatalogCount ? `已匹配 ${effectiveCatalogCount} / ${state.models.length} 个模型` : `从 ${state.models.length} 个模型中选择`
-        : selectedModels.length ? `已保留 ${selectedModels.length} 条现有规则` : "模型目录不可用";
-    const chips = selectedModels.length
-      ? selectedModels.map((model) => {
-          const wildcard = model.includes("*") || model.includes("?");
-          const outsideCatalog = !wildcard && !state.models.some((candidate) => candidate.id === model);
-          return `<span class="chip ${deny ? "deny" : ""}"><span>${escapeHTML(model)}</span>${wildcard ? '<small>通配符</small>' : outsideCatalog ? '<small>目录外</small>' : ""}<button class="chip-remove" type="button" data-action="remove-model" data-kind="${kind}" data-model="${escapeHTML(model)}" aria-label="移除此模型规则">${icons.close}</button></span>`;
+      ? "全部上游配置（*，包含未来新增）"
+      : state.profiles.length
+        ? effectiveCatalogCount ? `已匹配 ${effectiveCatalogCount} / ${state.profiles.length} 个上游配置` : `从 ${state.profiles.length} 个上游配置中选择`
+        : selectedProfiles.length ? `已保留 ${selectedProfiles.length} 条现有规则` : "上游配置目录不可用";
+    const chips = selectedProfiles.length
+      ? selectedProfiles.map((profile) => {
+          const wildcard = profile.includes("*") || profile.includes("?");
+          const outsideCatalog = !wildcard && !state.profiles.some((candidate) => candidate.id === profile);
+          return `<span class="chip ${deny ? "deny" : ""}"><span>${escapeHTML(profile)}</span>${wildcard ? '<small>通配符</small>' : outsideCatalog ? '<small>目录外</small>' : ""}<button class="chip-remove" type="button" data-action="remove-profile" data-kind="${kind}" data-profile="${escapeHTML(profile)}" aria-label="移除此上游配置规则">${icons.close}</button></span>`;
         }).join("")
-      : '<span class="empty-chips">尚未选择模型</span>';
-    const wildcardRow = `<button class="model-option wildcard-option ${wildcardSelected ? "selected" : ""}" type="button" role="option" aria-selected="${wildcardSelected}" data-action="toggle-model" data-kind="${kind}" data-model="*" data-search="全部模型 all models wildcard *">
-      <span class="model-checkbox" aria-hidden="true">${wildcardSelected ? icons.check : ""}</span>
-      <span class="model-option-copy"><strong>全部模型</strong><small>${deny ? "* · 此 Key 将无法访问任何模型" : "* · 自动包含未来新增模型"}</small></span>
-      <span class="model-badge">通配符</span>
+      : '<span class="empty-chips">尚未选择上游配置</span>';
+    const wildcardRow = `<button class="profile-option wildcard-option ${wildcardSelected ? "selected" : ""}" type="button" role="option" aria-selected="${wildcardSelected}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-search="全部上游配置 all profiles wildcard *">
+      <span class="profile-checkbox" aria-hidden="true">${wildcardSelected ? icons.check : ""}</span>
+      <span class="profile-option-copy"><strong>全部上游配置</strong><small>${deny ? "* · 此 Key 将无法访问任何上游配置" : "* · 自动包含未来新增上游配置"}</small></span>
+      <span class="profile-badge">通配符</span>
     </button>`;
-    const commonWildcards = ["gpt-*", "claude-*", "gemini-*", "qwen-*", "deepseek-*", "grok-*", "kimi-*", "glm-*", "minimax-*"];
-    const presetRows = commonWildcards.filter((rule) => selected.has(rule) || state.models.some((model) => modelPatternMatches(rule, model.id))).map((rule) => {
+    const commonWildcards = [];
+    const presetRows = commonWildcards.filter((rule) => selected.has(rule) || state.profiles.some((profile) => profileRuleMatches(rule, profile))).map((rule) => {
       const explicit = selected.has(rule);
       const derived = wildcardSelected && !explicit;
       const checked = explicit || derived;
-      const matchCount = state.models.filter((model) => modelPatternMatches(rule, model.id)).length;
-      return `<button class="model-option preset-option ${checked ? "selected" : ""} ${derived ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived}" data-action="toggle-model" data-kind="${kind}" data-model="${rule}" data-locked="${derived}" data-search="${rule} 通配符 wildcard">
-        <span class="model-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
-        <span class="model-option-copy"><strong>${rule}</strong><small>当前匹配 ${matchCount} 个模型，并覆盖未来同前缀模型</small></span>
-        <span class="model-badge">通配符</span>
+      const matchCount = state.profiles.filter((profile) => profileRuleMatches(rule, profile)).length;
+      return `<button class="profile-option preset-option ${checked ? "selected" : ""} ${derived ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived}" data-action="toggle-profile" data-kind="${kind}" data-profile="${rule}" data-locked="${derived}" data-search="${rule} 通配符 wildcard">
+        <span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
+        <span class="profile-option-copy"><strong>${rule}</strong><small>当前匹配 ${matchCount} 个上游配置，并覆盖未来同前缀上游配置</small></span>
+        <span class="profile-badge">通配符</span>
       </button>`;
     }).join("");
-    const rows = state.models.map((model) => {
-      const explicit = selected.has(model.id);
-      const matchedRule = explicit ? "" : matchedRuleFor(model.id);
+    const rows = state.profiles.map((profile) => {
+      const explicit = selected.has(profile.id);
+      const matchedRule = explicit ? "" : matchedRuleFor(profile);
       const derived = Boolean(matchedRule);
       const checked = explicit || derived;
-      return `<button class="model-option ${checked ? "selected" : ""} ${derived ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived}" data-action="toggle-model" data-kind="${kind}" data-model="${escapeHTML(model.id)}" data-locked="${derived}" data-search="${escapeHTML(`${model.id} ${model.displayName}`.toLowerCase())}">
-        <span class="model-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
-        <span class="model-option-copy"><strong>${escapeHTML(model.id)}</strong>${model.displayName ? `<small>${escapeHTML(model.displayName)}</small>` : ""}${derived ? `<small>由 ${escapeHTML(matchedRule)} 通配符匹配</small>` : ""}</span>
-        ${derived ? '<span class="model-badge">通配符</span>' : ""}
+      return `<button class="profile-option ${checked ? "selected" : ""} ${derived ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived}" data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(profile.id)}" data-locked="${derived}" data-search="${escapeHTML(`${profile.id} ${profile.provider} ${profile.displayName}`.toLowerCase())}">
+        <span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
+        <span class="profile-option-copy"><strong>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${derived ? `<small>由 ${escapeHTML(matchedRule)} 通配符匹配</small>` : ""}</span>
+        <span class="profile-badge">${escapeHTML(profile.kind === "oauth" ? "OAuth" : profile.provider || "API")}</span>
       </button>`;
     }).join("");
 
-    return `<div class="model-editor ${deny ? "deny" : ""}">
-      <div class="tag-head"><div><strong>${escapeHTML(title)}</strong><span>${escapeHTML(description)}</span></div><span class="selection-count">${selectedModels.length} 条规则</span></div>
-      <button class="model-trigger ${isOpen ? "open" : ""}" type="button" data-action="toggle-picker" data-kind="${kind}" aria-expanded="${isOpen}">
+    return `<div class="profile-editor ${deny ? "deny" : ""}">
+      <div class="tag-head"><div><strong>${escapeHTML(title)}</strong><span>${escapeHTML(description)}</span></div><span class="selection-count">${selectedProfiles.length} 条规则</span></div>
+      <button class="profile-trigger ${isOpen ? "open" : ""}" type="button" data-action="toggle-picker" data-kind="${kind}" aria-expanded="${isOpen}">
         <span>${escapeHTML(summary)}</span><span class="picker-chevron" aria-hidden="true">⌄</span>
-        ${state.models.length ? `<progress class="selection-meter" max="${state.models.length}" value="${effectiveCatalogCount}" aria-label="已匹配 ${effectiveCatalogCount} / ${state.models.length} 个模型"></progress>` : ""}
+        ${state.profiles.length ? `<progress class="selection-meter" max="${state.profiles.length}" value="${effectiveCatalogCount}" aria-label="已匹配 ${effectiveCatalogCount} / ${state.profiles.length} 个上游配置"></progress>` : ""}
       </button>
-      ${isOpen ? `<div class="model-panel">
-        ${state.models.length ? `<div class="model-search"><span>${icons.search}</span><input type="search" data-model-search="${kind}" value="${escapeHTML(state.pickerQuery)}" autocomplete="off" placeholder="搜索模型…" aria-label="搜索${escapeHTML(title)}"></div>
-        <div class="model-list" role="listbox" aria-multiselectable="true">${wildcardRow}${presetRows}${rows}<p class="model-empty" hidden>没有匹配的模型</p></div>
-        <div class="model-panel-footer"><span>已匹配 ${effectiveCatalogCount} / ${state.models.length}</span><div><button type="button" data-action="select-all-models" data-kind="${kind}">全选当前目录</button><button type="button" data-action="clear-models" data-kind="${kind}">清空</button></div></div>`
-        : `<div class="model-list compact" role="listbox" aria-multiselectable="true">${wildcardRow}</div><div class="catalog-notice"><span>${escapeHTML(state.modelsError || "没有可用模型目录。")}</span><button type="button" data-action="refresh-models">重新加载</button></div>`}
+      ${isOpen ? `<div class="profile-panel">
+        ${state.profiles.length ? `<div class="profile-search"><span>${icons.search}</span><input type="search" data-profile-search="${kind}" value="${escapeHTML(state.pickerQuery)}" autocomplete="off" placeholder="搜索上游配置…" aria-label="搜索${escapeHTML(title)}"></div>
+        <div class="profile-list" role="listbox" aria-multiselectable="true">${wildcardRow}${presetRows}${rows}<p class="profile-empty" hidden>没有匹配的上游配置</p></div>
+        <div class="profile-panel-footer"><span>已匹配 ${effectiveCatalogCount} / ${state.profiles.length}</span><div><button type="button" data-action="select-all-profiles" data-kind="${kind}">全选当前目录</button><button type="button" data-action="clear-profiles" data-kind="${kind}">清空</button></div></div>`
+        : `<div class="profile-list compact" role="listbox" aria-multiselectable="true">${wildcardRow}</div><div class="catalog-notice"><span>${escapeHTML(state.profilesError || "没有可用上游配置目录。")}</span><button type="button" data-action="refresh-profiles">重新加载</button></div>`}
       </div>` : ""}
       <div class="chips">${chips}</div>
     </div>`;
@@ -720,70 +770,70 @@
     return state.selectedIndex >= 0 ? state.keys[state.selectedIndex] : null;
   }
 
-  function validModelKind(kind) {
-    return kind === "allow_models" || kind === "deny_models";
+  function validProfileKind(kind) {
+    return kind === "allow_profiles" || kind === "deny_profiles";
   }
 
   function restorePickerView(kind, focusSearch = false) {
     requestAnimationFrame(() => {
-      const input = editor.querySelector(`[data-model-search="${kind}"]`);
-      const list = input?.closest(".model-panel")?.querySelector(".model-list");
-      if (input) filterModelPicker(input);
+      const input = editor.querySelector(`[data-profile-search="${kind}"]`);
+      const list = input?.closest(".profile-panel")?.querySelector(".profile-list");
+      if (input) filterProfilePicker(input);
       if (list) list.scrollTop = state.pickerScroll;
       if (focusSearch) input?.focus({ preventScroll: true });
     });
   }
 
-  function updateModels(kind, updater) {
-    if (state.busy || !validModelKind(kind)) return;
+  function updateProfiles(kind, updater) {
+    if (state.busy || !validProfileKind(kind)) return;
     const key = selectedKey();
     if (!key) return;
-    const currentList = editor.querySelector(`[data-model-search="${kind}"]`)?.closest(".model-panel")?.querySelector(".model-list");
+    const currentList = editor.querySelector(`[data-profile-search="${kind}"]`)?.closest(".profile-panel")?.querySelector(".profile-list");
     state.pickerScroll = currentList?.scrollTop || 0;
-    const nextModels = normalizeModels(updater([...key[kind]]));
-    if (nextModels.length === key[kind].length && nextModels.every((model, index) => model === key[kind][index])) return;
-    key[kind] = nextModels;
+    const nextProfiles = normalizeProfiles(updater([...key[kind]]));
+    if (nextProfiles.length === key[kind].length && nextProfiles.every((profile, index) => profile === key[kind][index])) return;
+    key[kind] = nextProfiles;
     markDirty();
     renderEditor();
     if (state.openPicker === kind) restorePickerView(kind, true);
   }
 
-  function filterModelPicker(input) {
+  function filterProfilePicker(input) {
     const query = input.value.trim().toLowerCase();
     state.pickerQuery = input.value;
-    const panel = input.closest(".model-panel");
+    const panel = input.closest(".profile-panel");
     if (!panel) return;
     let visible = 0;
-    panel.querySelectorAll(".model-option").forEach((option) => {
+    panel.querySelectorAll(".profile-option").forEach((option) => {
       const matches = !query || option.dataset.search.includes(query);
       option.hidden = !matches;
       if (matches) visible += 1;
     });
-    const empty = panel.querySelector(".model-empty");
+    const empty = panel.querySelector(".profile-empty");
     if (empty) empty.hidden = visible > 0;
   }
 
-  function setModelBusy(busy) {
-    state.modelBusy = busy;
+  function setProfileBusy(busy) {
+    state.profileBusy = busy;
     refreshDataButton.disabled = busy || state.busy;
     saveButton.disabled = busy || state.busy || !state.dirty;
     reloadButton.disabled = busy || state.busy || !state.status?.persistent_updates;
     if (!busy) finalizeEndedSession();
   }
 
-  async function refreshModelCatalog() {
-    if (state.busy || state.modelBusy) return;
-    setModelBusy(true);
-    const retryButton = editor.querySelector('[data-action="refresh-models"]');
+  async function refreshProfileCatalog() {
+    if (state.busy || state.profileBusy) return;
+    setProfileBusy(true);
+    const retryButton = editor.querySelector('[data-action="refresh-profiles"]');
     if (retryButton) { retryButton.disabled = true; retryButton.innerHTML = `${icons.spinner}<span>加载中</span>`; }
     try {
       const result = await fetchCurrentKeys({ includeCatalog: true });
-      state.models = result.catalog?.models || [];
-      state.modelsError = result.catalog?.error || "";
+      state.profiles = result.catalog?.profiles || [];
+      state.profilesError = result.catalog?.error || "";
       renderEditor();
-      showToast(state.models.length ? `已加载 ${state.models.length} 个模型` : state.modelsError, state.models.length ? "success" : "error");
+      showToast(state.profiles.length ? `已加载 ${state.profiles.length} 个上游配置` : state.profilesError, state.profiles.length ? "success" : "error");
     } finally {
-      setModelBusy(false);
+      setProfileBusy(false);
       syncHeader();
     }
   }
@@ -791,13 +841,13 @@
   function serializablePolicy() {
     const active = state.keys.filter(hasRules).map((key) => ({
       caller_scope: key.scope,
-      allow_models: [...key.allow_models],
-      deny_models: [...key.deny_models]
+      allow_profiles: [...key.allow_profiles],
+      deny_profiles: [...key.deny_profiles]
     }));
     const stale = state.stalePolicies.map((policy) => ({
       caller_scope: policy.caller_scope,
-      allow_models: [...policy.allow_models],
-      deny_models: [...policy.deny_models]
+      allow_profiles: [...policy.allow_profiles],
+      deny_profiles: [...policy.deny_profiles]
     }));
     return { version: 2, policies: [...active, ...stale] };
   }
@@ -844,7 +894,7 @@
       state.dirty = false;
       renderAll();
       if (keySetChangedAfterSave) {
-        showToast("策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 当前默认允许全部模型，请立即检查。", "error");
+        showToast("策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 当前默认允许全部上游配置，请立即检查。", "error");
       } else if (postSaveCheckError) {
         showToast(`策略已保存，但无法复核 CPA Key 列表：${postSaveCheckError.message}`, "error");
       } else {
@@ -893,15 +943,15 @@
   function policiesEquivalent(leftRaw, rightRaw) {
     const canonical = (raw) => normalizePolicyDocument(raw).policies.map((policy) => ({
       caller_scope: policy.caller_scope,
-      allow_models: [...policy.allow_models].sort(),
-      deny_models: [...policy.deny_models].sort()
+      allow_profiles: [...policy.allow_profiles].sort(),
+      deny_profiles: [...policy.deny_profiles].sort()
     })).sort((left, right) => left.caller_scope.localeCompare(right.caller_scope));
     return JSON.stringify(canonical(leftRaw)) === JSON.stringify(canonical(rightRaw));
   }
 
   async function refreshData() {
     if (state.busy) return;
-    if (state.dirty && !window.confirm("刷新会放弃尚未保存的模型规则。是否继续？")) return;
+    if (state.dirty && !window.confirm("刷新会放弃尚未保存的上游配置规则。是否继续？")) return;
     const preferredScope = selectedKey()?.scope || "";
     setBusy(true, "refresh");
     try {
@@ -919,7 +969,7 @@
 
   async function reload() {
     if (state.busy || !state.status?.persistent_updates) return;
-    if (state.dirty && !window.confirm("从策略文件重载会放弃尚未保存的模型规则。是否继续？")) return;
+    if (state.dirty && !window.confirm("从策略文件重载会放弃尚未保存的上游配置规则。是否继续？")) return;
     const preferredScope = selectedKey()?.scope || "";
     setBusy(true, "reload");
     let reloaded = false;
@@ -1027,28 +1077,28 @@
     if (!target) return;
     const action = target.dataset.action;
     const kind = target.dataset.kind;
-    if (action === "toggle-picker" && validModelKind(kind)) {
+    if (action === "toggle-picker" && validProfileKind(kind)) {
       const opening = state.openPicker !== kind;
       state.openPicker = opening ? kind : "";
       if (opening) { state.pickerQuery = ""; state.pickerScroll = 0; }
       renderEditor();
       if (opening) restorePickerView(kind, true);
-    } else if (action === "toggle-model") {
+    } else if (action === "toggle-profile") {
       if (target.dataset.locked === "true") return;
-      updateModels(kind, (models) => models.includes(target.dataset.model) ? models.filter((model) => model !== target.dataset.model) : [...models, target.dataset.model]);
-    } else if (action === "remove-model") {
-      updateModels(kind, (models) => models.filter((model) => model !== target.dataset.model));
-    } else if (action === "select-all-models") {
-      updateModels(kind, (models) => [...new Set([...models, ...state.models.map((model) => model.id)])]);
-    } else if (action === "clear-models") {
-      updateModels(kind, () => []);
-    } else if (action === "refresh-models") {
-      refreshModelCatalog().catch((error) => showToast(error.message, "error"));
+      updateProfiles(kind, (profiles) => profiles.includes(target.dataset.profile) ? profiles.filter((profile) => profile !== target.dataset.profile) : [...profiles, target.dataset.profile]);
+    } else if (action === "remove-profile") {
+      updateProfiles(kind, (profiles) => profiles.filter((profile) => profile !== target.dataset.profile));
+    } else if (action === "select-all-profiles") {
+      updateProfiles(kind, (profiles) => [...new Set([...profiles, ...state.profiles.map((profile) => profile.id)])]);
+    } else if (action === "clear-profiles") {
+      updateProfiles(kind, () => []);
+    } else if (action === "refresh-profiles") {
+      refreshProfileCatalog().catch((error) => showToast(error.message, "error"));
     }
   });
 
   editor.addEventListener("input", (event) => {
-    if (event.target.matches("[data-model-search]")) filterModelPicker(event.target);
+    if (event.target.matches("[data-profile-search]")) filterProfilePicker(event.target);
   });
 
   document.addEventListener("keydown", (event) => {

@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 env:
-  PLUGIN_NAME: key-model-access
+  PLUGIN_NAME: key-provider-access
 
 jobs:
   test:

@@ -1,21 +1,15 @@
 version: 2
 
-# caller_scope is a 64-character hexadecimal identity derived by CPA for an
-# existing top-level api-keys entry. This value is syntactically valid, but is
-# only an example. Use the Web UI to generate scopes for your current CPA keys;
-# do not reuse an old v1 key_sha256 or place a raw key in this file.
+# Use the Web UI to generate caller scopes and select live auth profile IDs.
 policies:
   - caller_scope: "f7291f3315e5ab0d3c02015a081879d748693f231d8370b43f38f57be991734a"
-    # deny_models always wins. A non-empty allow_models is a whitelist.
-    allow_models:
-      - "gpt-5*"
-      - "claude-sonnet-*"
-    deny_models:
-      - "*-preview"
+    allow_profiles:
+      - "codex:apikey:abc123def456"
+      - "oauth-profile-id"
+    deny_profiles:
+      - "*-retired"
 
   - caller_scope: "7cb03289303ff43e7ec5853fd1020a9bd0395cc40d9fe5134e33fe2534b30358"
-    # With an empty allow_models list, all models not matched by deny_models
-    # are allowed. A CPA key with no policy at all is also allowed by default.
-    allow_models: []
-    deny_models:
-      - "private-*"
+    allow_profiles: []
+    deny_profiles:
+      - "test-*"
