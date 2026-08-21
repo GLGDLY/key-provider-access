@@ -21,6 +21,8 @@
 
   const CPAMC_AUTH_KEY = "cli-proxy-auth";
   const CPAMC_THEME_KEY = "cli-proxy-theme";
+  const CPAMC_LANGUAGE_KEY = "cli-proxy-language";
+  const SUPPORTED_LANGUAGES = new Set(["en", "zh-CN", "zh-TW", "ru"]);
   const OBFUSCATION_PREFIX = "enc::v1::";
   const OBFUSCATION_SALT = "cli-proxy-api-webui::secure-storage";
 
@@ -59,6 +61,206 @@
     pickerQuery: "",
     pickerScroll: 0
   };
+
+  let currentLanguage = "en";
+  let localizing = false;
+
+  // The host management UI stores its language preference under this key. The
+  // plugin reads that preference (including CPAMC's obfuscated storage format)
+  // and deliberately falls back to English instead of the browser's Chinese
+  // locale. Chinese remains available for existing installations.
+  const ENGLISH_REPLACEMENTS = [
+    ["正在接入管理会话", "Connecting to management session"],
+    ["正在只读获取 CPAMC 当前连接信息，无需再次输入 Management Key。", "Reading the current CPAMC connection in read-only mode. No second Management Key is required."],
+    ["重新读取会话", "Read session again"],
+    ["插件只读取 CPAMC 已保存的同源会话，不会复制或再次持久化 Management Key。", "The plugin only reads the saved same-origin CPAMC session; it never copies or persists the Management Key again."],
+    ["上游配置权限", "Key Provider Access"],
+    ["现有 Key 的上游配置访问策略", "Provider access policies for existing CPA keys"],
+    ["策略导航", "Policy navigation"],
+    ["只读来源", "Read-only source"],
+    ["搜索 Key", "Search keys"],
+    ["页面操作", "Page actions"],
+    ["插件状态", "Plugin status"],
+    ["正在连接", "Connecting"],
+    ["刷新 CPA Key 与策略", "Refresh CPA keys and policies"],
+    ["从策略文件重载", "Reload from policy file"],
+    ["保存上游配置规则", "Save provider rules"],
+    ["权限概览", "Access overview"],
+    ["认证由 CPA 管理", "Authentication managed by CPA"],
+    ["当前 CPA API Keys", "Current CPA API keys"],
+    ["没有匹配的 Key", "No matching keys"],
+    ["CPA 当前没有 API Key", "CPA has no API keys"],
+    ["上游配置权限概览", "Provider access overview"],
+    ["API Key 的创建、删除和生命周期完全由 CPA 管理；此页面只为现有 Key 配置上游配置规则。", "CPA manages API key creation, deletion, and lifecycle; this page configures provider rules for existing keys."],
+    ["权限统计", "Access statistics"],
+    ["当前 CPA Key", "Current CPA keys"],
+    ["只读同步", "Read-only sync"],
+    ["已配置", "Configured"],
+    ["含 allow 或 deny", "Has allow or deny rules"],
+    ["默认允许", "Default allow"],
+    ["没有上游配置规则", "No provider rules"],
+    ["失效策略", "Stale policies"],
+    ["保存时仍保留", "Preserved when saving"],
+    ["Provider 访问计数", "Provider access counts"],
+    ["每个上游 Profile 单独统计，不会合并同一 Provider 类型的 OAuth/API 条目；每个 CPA Key 对每个 Profile 计一次。", "Each upstream profile is counted separately; OAuth and API entries of the same provider kind are not merged. Each CPA key contributes once per profile."],
+    ["认证边界", "Authentication boundary"],
+    ["Key 身份与上游配置授权相互分离。", "Key identity and provider authorization are kept separate."],
+    ["认证由 CPA 内置 API Keys 管理", "Authentication is managed by CPA's built-in API keys"],
+    ["插件仅接收 CPA 提供的 caller scope，并据此执行 allow_profiles 与 deny_profiles。未配置策略或规则为空时，默认允许全部上游配置。", "The plugin receives only CPA's caller scope and applies allow_profiles and deny_profiles. With no policy or empty rules, all providers are allowed by default."],
+    ["运行状态", "Runtime status"],
+    ["来自当前 CPA 插件实例。", "Reported by the current CPA plugin instance."],
+    ["认证模式", "Authentication mode"],
+    ["身份来源", "Identity source"],
+    ["未配置 Key", "Unconfigured key"],
+    ["允许全部上游配置", "Allow all providers"],
+    ["后端策略数", "Backend policies"],
+    ["策略版本", "Policy version"],
+    ["策略来源", "Policy source"],
+    ["最后更新", "Last updated"],
+    ["当前默认允许全部上游配置。", "All providers are currently allowed by default."],
+    ["从目录中选择允许或拒绝上游配置后才会为此 Key 写入策略。", "A policy is written for this key only after you select providers to allow or deny."],
+    ["上游配置规则", "Provider rules"],
+    ["直接从 CPA 可用上游配置目录中选择；拒绝规则始终优先于允许规则。", "Select directly from CPA's available provider catalog; deny rules always take precedence over allow rules."],
+    ["允许上游配置", "Allow providers"],
+    ["设置后，仅允许列表中的上游配置", "When set, only providers in this list are allowed"],
+    ["拒绝上游配置", "Deny providers"],
+    ["命中后始终拒绝访问", "Matching providers are always denied"],
+    ["通配符", "Wildcard"],
+    ["目录外", "Outside catalog"],
+    ["移除此上游配置规则", "Remove this provider rule"],
+    ["尚未选择上游配置", "No providers selected yet"],
+    ["全部上游配置", "All providers"],
+    ["上游配置目录不可用", "Provider catalog unavailable"],
+    ["没有匹配的上游配置", "No matching providers"],
+    ["全选可用配置", "Select all available"],
+    ["清空", "Clear"],
+    ["重新加载", "Reload"],
+    ["加载中", "Loading"],
+    ["策略警告", "Policy warning"],
+    ["未连接", "Disconnected"],
+    ["插件运行正常", "Plugin is healthy"],
+    ["保存修改", "Save changes"],
+    ["已保存", "Saved"],
+    ["正在保存", "Saving"],
+    ["正在重载", "Reloading"],
+    ["策略自动保存到", "Policy is automatically saved to"],
+    ["当前为内存模式；打开页面时会自动创建插件策略文件。", "Memory-only mode; the plugin policy file will be created when this page opens."],
+    ["CPA 当前没有可统计的上游配置。", "CPA has no provider profiles to count."],
+    ["没有可用上游配置目录。", "No provider catalog is available."],
+    ["刷新会放弃尚未保存的上游配置规则。是否继续？", "Refreshing will discard unsaved provider rules. Continue?"],
+    ["从策略文件重载会放弃尚未保存的上游配置规则。是否继续？", "Reloading from the policy file will discard unsaved provider rules. Continue?"],
+    ["已刷新 CPA Key 与策略", "CPA keys and policies refreshed"],
+    ["已从策略文件重载", "Reloaded from policy file"],
+    ["策略已被其他管理员或配置重载修改。请刷新数据后再保存。", "The policy was changed by another administrator or a configuration reload. Refresh before saving."],
+    ["策略已保存并持久化", "Policy saved and persisted"],
+    ["策略已保存到内存", "Policy saved in memory"],
+    ["刷新数据", "Refresh data"]
+    , ["插件返回了无效的 v2 策略文档。", "The plugin returned an invalid v2 policy document."],
+    ["CPA 响应超时，请检查服务状态。", "CPA response timed out; check the service status."],
+    ["操作响应超时，提交结果尚未确认。", "The operation timed out; the submission result is not confirmed."],
+    ["CPA 当前没有可用的 OAuth 或 API provider 配置。", "CPA has no usable OAuth or API provider profiles."],
+    ["上游配置目录加载失败。", "Failed to load the provider catalog."],
+    ["CPA 返回了无法识别的 API Key 列表。", "CPA returned an unrecognized API key list."],
+    ["CPA 未返回有效的 plugins_dir。", "CPA did not return a valid plugins_dir."],
+    ["插件未返回默认策略文件路径。", "The plugin did not return a default policy file path."],
+    ["自动创建插件策略文件失败。", "Failed to create the plugin policy file automatically."],
+    ["未找到可复用的 CPAMC 会话", "No reusable CPAMC session found"],
+    ["自动接入要求 CPAMC 与 CPA 同源，并在登录时启用“记住密码”。请确认后返回此页面重试；插件不会要求你再次输入 Management Key。", "Automatic connection requires CPAMC and CPA to share an origin, with “remember password” enabled at login. Return here and retry; the plugin will not ask for the Management Key again."],
+    ["CPAMC 保存的 Management Key 已失效。请返回 CPAMC 重新登录并启用“记住密码”。", "The saved CPAMC Management Key has expired. Return to CPAMC, sign in again, and enable “remember password”."],
+    ["无法连接 CPA：", "Unable to connect to CPA: "],
+    ["管理会话不可用", "Management session unavailable"],
+    ["CPAMC 会话已结束", "CPAMC session ended"],
+    ["未保存的策略草稿已保留在当前页面内存中。请重新登录；会话恢复后草稿会自动还原。", "The unsaved policy draft was kept in this page's memory. Sign in again; it will be restored when the session returns."],
+    ["请先在 CPAMC 重新登录并启用“记住密码”，页面会自动重新接入。", "Sign in to CPAMC again with “remember password” enabled; this page will reconnect automatically."],
+    ["策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 当前默认允许全部上游配置，请立即检查。", "The policy was saved, but the CPA key list changed during saving. New keys currently allow all providers by default; review them now."],
+    ["策略已保存，但无法复核 CPA Key 列表：", "The policy was saved, but the CPA key list could not be verified: "],
+    ["策略已保存，但状态刷新失败：", "The policy was saved, but status refresh failed: "],
+    ["保存响应超时，但已重新读取并确认提交成功", "The save response timed out, but a reread confirmed the submission succeeded"],
+    ["保存结果无法确认；本地修改已保留，请刷新后核对。", "The save result could not be confirmed; local changes were kept. Refresh and check."],
+    ["策略已重载，但界面刷新失败：", "The policy reloaded, but the page could not refresh: "],
+    ["已加载", "Loaded"],
+    ["个上游配置", " providers"],
+    ["策略已保存，但", "The policy was saved, but "],
+    ["完整下游 CPA Key 仅在内存中用于计算 caller scope 和生成首尾脱敏显示，不会写入策略、DOM、浏览器存储或 URL。上游凭据仅在内存中用于复现 CPA profile ID，不会写入策略、DOM、浏览器存储或 URL。", "The complete downstream CPA key exists only in memory to calculate the caller scope and head/tail mask; it is never written to policy, the DOM, browser storage, or the URL. Upstream provider inputs are used only in memory to reproduce CPA profile IDs and are never written to policy, the DOM, browser storage, or the URL."]
+  ];
+
+  function normalizeLanguage(value) {
+    const language = String(value || "").trim().toLowerCase();
+    if (language.startsWith("zh-tw") || language.startsWith("zh-hk") || language.startsWith("zh-mo") || language.startsWith("zh-hant")) return "zh-TW";
+    if (language.startsWith("zh")) return "zh-CN";
+    if (language.startsWith("ru")) return "ru";
+    if (language.startsWith("en")) return "en";
+    return "";
+  }
+
+  function readCPAMCLanguage() {
+    const persisted = readStoredValue(CPAMC_LANGUAGE_KEY);
+    const candidate = typeof persisted === "string"
+      ? persisted
+      : persisted?.state?.language ?? persisted?.language ?? "";
+    const normalized = normalizeLanguage(candidate);
+    return SUPPORTED_LANGUAGES.has(normalized) ? normalized : "en";
+  }
+
+  function translateText(value) {
+    let text = String(value ?? "");
+    if (currentLanguage === "zh-CN") {
+      for (const [from, to] of ENGLISH_REPLACEMENTS) text = text.split(to).join(from);
+      return text;
+    }
+    for (const [from, to] of ENGLISH_REPLACEMENTS) text = text.split(from).join(to);
+    text = text.replace(/^(\d+) 个当前 Key$/, "$1 current CPA keys")
+      .replace(/^已匹配 (\d+) \/ (\d+) 个上游配置$/, "Matched $1 / $2 providers")
+      .replace(/^从 (\d+) 个上游配置中选择$/, "Select from $1 providers")
+      .replace(/^(\d+) 条规则$/, "$1 rules")
+      .replace(/^已加载 (\d+) 个上游配置$/, "Loaded $1 providers")
+      .replace(/^策略自动保存到 (.+)$/, "Policy is automatically saved to $1")
+      .replace(/^自动持久化失败：(.+) 当前修改仅保存在内存中。$/, "Automatic persistence failed: $1 Changes are currently kept in memory only.")
+      .replace(/^点击将清空(.+)规则$/, "Click to clear $1 rules")
+      .replace(/^点击将从(.+)中移除冲突规则并取消此匹配$/, "Click to remove the conflicting rule from $1 and cancel this match")
+      .replace(/^点击将从(.+)中移除冲突规则$/, "Click to remove the conflicting rule from $1")
+      .replace(/^点击将取消(.+)匹配$/, "Click to cancel the $1 match")
+      .replace(/^当前匹配 (\d+) 个上游配置，并覆盖未来同前缀上游配置$/, "Matches $1 providers and future providers with the same prefix")
+      .replace(/^已保留 (\d+) 条现有规则$/, "$1 existing rules retained")
+      .replace(/^已匹配 (\d+) \/ (\d+)$/, "Matched $1 / $2")
+      .replace(/^策略 (\d+) 格式无效。$/, "Policy $1 has an invalid format.")
+      .replace(/^策略 (\d+) 的 caller scope 无效。$/, "Policy $1 has an invalid caller scope.")
+      .replace(/^策略 (\d+) 的 caller scope 重复。$/, "Policy $1 has a duplicate caller scope.")
+      .replace(/^策略 (\d+) 的 (allow_profiles|deny_profiles) 无效。$/, "Policy $1 has an invalid $2.")
+      .replace(/^请求失败（HTTP (\d+)）。$/, "Request failed (HTTP $1).")
+      .replace(/^已加载 (\d+) 个上游配置$/, "Loaded $1 providers")
+      .replace(/^已匹配 (\d+) \/ (\d+) 个上游配置$/, "Matched $1 / $2 providers");
+    return text;
+  }
+
+  function localizePage() {
+    if (localizing) return;
+    localizing = true;
+    try {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      nodes.forEach((node) => {
+        const translated = translateText(node.nodeValue);
+        if (translated !== node.nodeValue) node.nodeValue = translated;
+      });
+      document.querySelectorAll("[placeholder], [aria-label], [title]").forEach((element) => {
+        for (const attribute of ["placeholder", "aria-label", "title"]) {
+          if (element.hasAttribute(attribute)) element.setAttribute(attribute, translateText(element.getAttribute(attribute)));
+        }
+      });
+    } finally {
+      localizing = false;
+    }
+  }
+
+  function applyLanguage(language = readCPAMCLanguage()) {
+    currentLanguage = SUPPORTED_LANGUAGES.has(language) ? language : "en";
+    document.documentElement.lang = currentLanguage;
+    const selector = $("#languageSelect");
+    if (selector) selector.value = currentLanguage;
+    localizePage();
+  }
 
   const $ = (selector) => document.querySelector(selector);
   const authGate = $("#authGate");
@@ -847,7 +1049,8 @@
     if (!value) return "—";
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
+    const locale = currentLanguage === "zh-CN" ? "zh-CN" : currentLanguage === "zh-TW" ? "zh-TW" : currentLanguage === "ru" ? "ru-RU" : "en-US";
+    return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
   }
 
   function selectedKey() {
@@ -1169,8 +1372,16 @@
     document.documentElement.classList.toggle("is-embedded", window.self !== window.top);
     $("#searchIcon").innerHTML = icons.search;
     refreshDataButton.innerHTML = icons.refresh;
-    reloadButton.innerHTML = `${icons.file}<span class="label-long">从文件重载</span>`;
-    saveButton.innerHTML = `${icons.save}<span class="label-long">已保存</span>`;
+    reloadButton.innerHTML = `${icons.file}<span class="label-long">Reload from policy file</span>`;
+    saveButton.innerHTML = `${icons.save}<span class="label-long">Saved</span>`;
+    applyLanguage();
+    const languageSelect = $("#languageSelect");
+    if (languageSelect) languageSelect.addEventListener("change", (event) => {
+      const language = normalizeLanguage(event.target.value) || "en";
+      try { localStorage.setItem(CPAMC_LANGUAGE_KEY, JSON.stringify({ state: { language } })); } catch (_) { /* preference is optional */ }
+      applyLanguage(language);
+    });
+    new MutationObserver(() => localizePage()).observe(document.body, { childList: true, subtree: true, characterData: true });
     syncTheme();
     try {
       if (window.self !== window.top) {
@@ -1182,6 +1393,7 @@
   $("#retrySessionButton").addEventListener("click", connectFromCPAMC);
   window.addEventListener("storage", (event) => {
     if (event.key === CPAMC_THEME_KEY) syncTheme();
+    if (event.key === CPAMC_LANGUAGE_KEY) applyLanguage();
     if (event.key !== CPAMC_AUTH_KEY && event.key !== "isLoggedIn") return;
     if (app.hidden) {
       connectFromCPAMC();

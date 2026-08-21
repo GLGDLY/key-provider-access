@@ -349,6 +349,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .command-state { min-width: 0; display: flex; align-items: center; gap: 0.6rem; }
 .command-label { color: var(--text-tertiary); font-size: 0.66rem; font-weight: 680; letter-spacing: 0.04em; }
 .topbar-actions { min-width: 0; display: flex; align-items: center; gap: 0.38rem; }
+.language-select { min-height: 2.3rem; max-width: 8.5rem; padding: 0.35rem 0.55rem; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-secondary); background: var(--surface); font-size: 0.72rem; }
 .separator { width: 1px; height: 1.35rem; margin: 0 0.15rem; background: var(--border); }
 .health-badge {
   min-height: 1.8rem;
