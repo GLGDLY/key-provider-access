@@ -393,6 +393,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .provider-table th:first-child { width: 100%; text-align: left; }
 .provider-table tbody th { color: var(--text); font-weight: 620; }
 .provider-name { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+.provider-profile { display: block; margin-top: 0.12rem; color: var(--text-tertiary); font: 0.61rem/1.35 ui-monospace, "SFMono-Regular", Consolas, monospace; font-weight: 400; overflow-wrap: anywhere; }
 .provider-count { min-width: 2.4rem; display: inline-block; padding: 0.16rem 0.46rem; border-radius: 999px; text-align: center; }
 .provider-count.enabled { color: var(--success); background: var(--success-soft); }
 .provider-count.disabled { color: var(--danger); background: var(--danger-soft); }

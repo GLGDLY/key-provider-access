@@ -654,18 +654,26 @@
   }
 
   function providerAccessCounts() {
-    const byProvider = new Map();
+    const rows = [];
     for (const profile of state.profiles) {
       const provider = String(profile.provider || "unknown").trim() || "unknown";
-      if (!byProvider.has(provider)) byProvider.set(provider, { provider, profiles: 0, enabled: 0, disabled: 0 });
-      const counts = byProvider.get(provider);
-      counts.profiles += 1;
+      const profileID = String(profile.id || "").trim();
+      if (!profileID) continue;
+      const counts = {
+        provider,
+        profile: String(profile.displayName || profileID).trim() || profileID,
+        profileID,
+        kind: profile.kind === "oauth" ? "OAuth" : "API",
+        enabled: 0,
+        disabled: 0
+      };
       for (const key of state.keys) {
         if (keyAllowsProfile(key, profile.id)) counts.enabled += 1;
         else counts.disabled += 1;
       }
+      rows.push(counts);
     }
-    return [...byProvider.values()].sort((left, right) => left.provider.localeCompare(right.provider));
+    return rows.sort((left, right) => left.provider.localeCompare(right.provider) || left.profile.localeCompare(right.profile) || left.profileID.localeCompare(right.profileID));
   }
 
   function providerAccessTable(counts) {
@@ -673,10 +681,10 @@
       return `<p class="provider-empty">${escapeHTML(state.profilesError || "CPA 当前没有可统计的上游配置。")}</p>`;
     }
     return `<div class="provider-table-wrap"><table class="provider-table">
-      <thead><tr><th scope="col">Provider</th><th scope="col">Profiles</th><th scope="col">允许 / Enabled</th><th scope="col">拒绝 / Disabled</th></tr></thead>
+      <thead><tr><th scope="col">Provider / Profile</th><th scope="col">Type</th><th scope="col">允许 / Enabled</th><th scope="col">拒绝 / Disabled</th></tr></thead>
       <tbody>${counts.map((item) => `<tr>
-        <th scope="row"><span class="provider-name">${escapeHTML(item.provider)}</span></th>
-        <td>${item.profiles}</td>
+        <th scope="row"><span class="provider-name">${escapeHTML(item.provider)}</span><small class="provider-profile">${escapeHTML(item.profile)} · ${escapeHTML(item.profileID)}</small></th>
+        <td>${escapeHTML(item.kind)}</td>
         <td><strong class="provider-count enabled">${item.enabled}</strong></td>
         <td><strong class="provider-count disabled">${item.disabled}</strong></td>
       </tr>`).join("")}</tbody>
@@ -712,7 +720,7 @@
         ${statCard("失效策略", staleCount, "保存时仍保留", staleCount > 0)}
       </section>
       <section class="card">
-        <div class="card-head"><h2>Provider 访问计数</h2><p>按当前 CPA Key × Profile 组合统计；每个 Key 对每个上游 Profile 计一次。</p></div>
+        <div class="card-head"><h2>Provider 访问计数</h2><p>每个上游 Profile 单独统计，不会合并同一 Provider 类型的 OAuth/API 条目；每个 CPA Key 对每个 Profile 计一次。</p></div>
         ${providerAccessTable(providerCounts)}
       </section>
       <section class="card">
