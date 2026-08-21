@@ -156,6 +156,18 @@
     return `${scope.slice(0, 10)}…${scope.slice(-6)}`;
   }
 
+  function maskCPAKey(value) {
+    const key = String(value ?? "").trim();
+    if (!key) return "••••";
+    if (key.length === 1) return "••••";
+    if (key.length <= 4) return `${key.slice(0, 1)}••••${key.slice(-1)}`;
+    const headLength = Math.min(6, Math.max(2, Math.floor(key.length / 3)));
+    const tailLength = Math.min(4, Math.max(2, Math.floor(key.length / 4)));
+    const hiddenLength = key.length - headLength - tailLength;
+    if (hiddenLength <= 0) return `${key.slice(0, 1)}••••${key.slice(-1)}`;
+    return `${key.slice(0, headLength)}${"•".repeat(Math.min(hiddenLength, 8))}${key.slice(-tailLength)}`;
+  }
+
   function keyLabel(index) {
     return `CPA API Key ${String(index + 1).padStart(2, "0")}`;
   }
@@ -354,16 +366,18 @@
         options.includeCatalog ? fetchProfileCatalog() : Promise.resolve(null)
       ]);
       const seen = new Set();
-      const keys = scopes.filter((scope) => {
-        if (seen.has(scope)) return false;
-        seen.add(scope);
-        return true;
-      }).map((scope) => ({
+      const keys = scopes.map((scope, index) => ({
         scope,
-        fingerprint: shortFingerprint(scope),
-        mask: "••••••••••••",
+        masked: maskCPAKey(normalizedValues[index]),
         allow_profiles: [],
         deny_profiles: []
+      })).filter((key) => {
+        if (seen.has(key.scope)) return false;
+        seen.add(key.scope);
+        return true;
+      }).map((key) => ({
+        ...key,
+        fingerprint: shortFingerprint(key.scope)
       }));
       return options.includeCatalog ? { keys, catalog } : keys;
     } finally {
@@ -588,7 +602,7 @@
   function renderNav() {
     const query = state.search.trim().toLowerCase();
     const visible = state.keys.map((key, index) => ({ key, index })).filter(({ key, index }) =>
-      !query || key.fingerprint.toLowerCase().includes(query) || keyLabel(index).toLowerCase().includes(query)
+      !query || key.masked.toLowerCase().includes(query) || key.fingerprint.toLowerCase().includes(query) || keyLabel(index).toLowerCase().includes(query)
     );
     nav.innerHTML = `
       <button class="nav-item" type="button" data-select="overview" aria-current="${state.selectedIndex < 0 ? "page" : "false"}">
@@ -597,9 +611,9 @@
       </button>
       <p class="nav-group-label">当前 CPA API Keys</p>
       ${visible.length ? visible.map(({ key, index }) => `
-        <button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selectedIndex === index ? "page" : "false"}" aria-label="${escapeHTML(keyLabel(index))}，SHA-256 指纹 ${escapeHTML(key.fingerprint)}">
+        <button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selectedIndex === index ? "page" : "false"}" aria-label="${escapeHTML(keyLabel(index))}，${escapeHTML(key.masked)}，SHA-256 指纹 ${escapeHTML(key.fingerprint)}">
           <span class="nav-icon key">${icons.key}</span>
-          <span class="nav-copy"><strong>${escapeHTML(keyLabel(index))}</strong><span>SHA-256 ${escapeHTML(key.fingerprint)}</span></span>
+          <span class="nav-copy"><strong>${escapeHTML(keyLabel(index))}</strong><span class="mono masked-key">${escapeHTML(key.masked)}</span><span>SHA-256 ${escapeHTML(key.fingerprint)}</span></span>
         </button>`).join("") : `<p class="empty-nav">${query ? "没有匹配的 Key" : "CPA 当前没有 API Key"}</p>`}
     `;
   }
@@ -682,7 +696,7 @@
         <div class="editor-title-wrap">
           <p class="editor-kicker">Existing CPA key</p>
           <h1>${escapeHTML(keyLabel(index))}</h1>
-          <p class="editor-subtitle key-summary"><span>${key.mask}</span><span class="mono">SHA-256 ${escapeHTML(key.fingerprint)}</span></p>
+          <p class="editor-subtitle key-summary"><span class="mono masked-key">${escapeHTML(key.masked)}</span><span class="mono">SHA-256 ${escapeHTML(key.fingerprint)}</span></p>
         </div>
       </header>
       ${empty ? `<div class="default-notice">${icons.check}<span><strong>当前默认允许全部上游配置。</strong>从目录中选择允许或拒绝上游配置后才会为此 Key 写入策略。</span></div>` : ""}
@@ -691,7 +705,7 @@
         ${profilePicker("allow_profiles", "允许上游配置", "设置后，仅允许列表中的上游配置", key.allow_profiles, false)}
         ${profilePicker("deny_profiles", "拒绝上游配置", "命中后始终拒绝访问", key.deny_profiles, true)}
       </section>
-      <div class="privacy-note">Management Key 复用 CPAMC 已保存的同源会话；下游 CPA Key 只用于计算 caller scope。上游凭据仅在内存中用于复现 CPA profile ID，不会写入策略、DOM、浏览器存储或 URL。</div>`;
+      <div class="privacy-note">Management Key 复用 CPAMC 已保存的同源会话；完整下游 CPA Key 仅在内存中用于计算 caller scope 和生成首尾脱敏显示，不会写入策略、DOM、浏览器存储或 URL。上游凭据仅在内存中用于复现 CPA profile ID，不会写入策略、DOM、浏览器存储或 URL。</div>`;
     editor.dataset.keyIndex = String(index);
   }
 

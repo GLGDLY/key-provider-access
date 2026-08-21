@@ -65,6 +65,9 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"const commonWildcards",
 		"cli-proxy-api:caller-scope:v1\\0",
 		"<strong>${escapeHTML(keyLabel(index))}</strong>",
+		"function maskCPAKey(value)",
+		"masked: maskCPAKey(normalizedValues[index])",
+		"class=\"mono masked-key\"",
 		":root",
 	} {
 		if !strings.Contains(body, expected) {

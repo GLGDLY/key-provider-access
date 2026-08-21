@@ -314,6 +314,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .nav-copy strong, .nav-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-copy strong { color: inherit; font-size: 0.75rem; font-weight: 640; }
 .nav-copy span { margin-top: 0.1rem; color: var(--text-tertiary); font: 0.61rem/1.25 ui-monospace, "SFMono-Regular", Consolas, monospace; }
+.nav-copy .masked-key { color: var(--text-secondary); letter-spacing: 0.04em; }
 .empty-nav { padding: 1rem 0.6rem; color: var(--text-tertiary); font-size: 0.74rem; text-align: center; }
 .persistence-notice { margin-top: 0.8rem; padding: 0.72rem; border: 1px solid var(--border); border-radius: 0.72rem; color: var(--text-secondary); background: var(--surface); font-size: 0.65rem; line-height: 1.5; }
 .persistence-notice.warning { border-color: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); background: var(--warning-soft); }
