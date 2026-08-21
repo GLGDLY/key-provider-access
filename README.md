@@ -42,6 +42,8 @@ The Web UI is available at:
 
 It reuses the same-origin CPAMC management session, reads downstream CPA keys to derive caller scopes, and builds a profile catalog from CPA's read-only auth/config management endpoints. Provider secrets are used only transiently to reproduce CPA's stable auth IDs and are not written to plugin state, DOM, browser storage, or URLs.
 
+The panel identifies each downstream key with a masked head-and-tail display; the middle of the full key remains hidden. Full downstream keys are not persisted.
+
 On first use, the UI creates `plugins/key-provider-access/config.toml` and patches only this plugin's `policy_file` setting. Policy updates use revision ETags and atomic file replacement.
 
 ## Policy schema
