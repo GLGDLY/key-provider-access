@@ -796,9 +796,9 @@
           return `<span class="chip ${deny ? "deny" : ""}"><span>${escapeHTML(profile)}</span>${wildcard ? '<small>通配符</small>' : outsideCatalog ? '<small>目录外</small>' : ""}<button class="chip-remove" type="button" data-action="remove-profile" data-kind="${kind}" data-profile="${escapeHTML(profile)}" aria-label="移除此上游配置规则">${icons.close}</button></span>`;
         }).join("")
       : '<span class="empty-chips">尚未选择上游配置</span>';
-    const wildcardRow = `<button class="profile-option wildcard-option ${wildcardSelected ? "selected" : ""} ${wildcardConflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${wildcardSelected}" aria-disabled="${wildcardConflicted}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-locked="${wildcardConflicted}" data-search="全部上游配置 all profiles wildcard *" ${wildcardConflicted ? "disabled" : ""}>
+    const wildcardRow = `<button class="profile-option wildcard-option ${wildcardSelected ? "selected" : ""} ${wildcardConflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${wildcardSelected}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-conflicted="${wildcardConflicted}" data-search="全部上游配置 all profiles wildcard *">
       <span class="profile-checkbox" aria-hidden="true">${wildcardSelected ? icons.check : ""}</span>
-      <span class="profile-option-copy"><strong>全部上游配置</strong><small>${wildcardConflicted ? `与${oppositeTitle}已有规则互斥，请先清空另一侧` : deny ? "* · 此 Key 将无法访问任何上游配置" : "* · 自动包含未来新增上游配置"}</small></span>
+      <span class="profile-option-copy"><strong>全部上游配置</strong><small>${wildcardConflicted ? `点击将清空${oppositeTitle}规则` : deny ? "* · 此 Key 将无法访问任何上游配置" : "* · 自动包含未来新增上游配置"}</small></span>
       <span class="profile-badge">通配符</span>
     </button>`;
     const commonWildcards = [];
@@ -808,9 +808,9 @@
       const checked = explicit || derived;
       const conflicted = !checked && profileRulesConflict(rule, oppositeProfiles);
       const matchCount = state.profiles.filter((profile) => profileRuleMatches(rule, profile)).length;
-      return `<button class="profile-option preset-option ${checked ? "selected" : ""} ${derived ? "derived" : ""} ${conflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived || conflicted}" data-action="toggle-profile" data-kind="${kind}" data-profile="${rule}" data-locked="${derived || conflicted}" data-search="${rule} 通配符 wildcard" ${conflicted ? "disabled" : ""}>
+      return `<button class="profile-option preset-option ${checked ? "selected" : ""} ${derived ? "derived" : ""} ${conflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${checked}" data-action="toggle-profile" data-kind="${kind}" data-profile="${rule}" data-derived="${derived}" data-conflicted="${conflicted}" data-search="${rule} 通配符 wildcard">
         <span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
-        <span class="profile-option-copy"><strong>${rule}</strong><small>${conflicted ? `已被${oppositeTitle}占用` : `当前匹配 ${matchCount} 个上游配置，并覆盖未来同前缀上游配置`}</small></span>
+        <span class="profile-option-copy"><strong>${rule}</strong><small>${conflicted ? `点击将从${oppositeTitle}中移除冲突规则` : `当前匹配 ${matchCount} 个上游配置，并覆盖未来同前缀上游配置`}</small></span>
         <span class="profile-badge">通配符</span>
       </button>`;
     }).join("");
@@ -820,9 +820,9 @@
       const derived = Boolean(matchedRule);
       const checked = explicit || derived;
       const conflicted = !checked && profileRulesConflict(profile.id, oppositeProfiles);
-      return `<button class="profile-option ${checked ? "selected" : ""} ${derived ? "derived" : ""} ${conflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived || conflicted}" data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(profile.id)}" data-locked="${derived || conflicted}" data-search="${escapeHTML(`${profile.id} ${profile.provider} ${profile.displayName}`.toLowerCase())}" ${conflicted ? "disabled" : ""}>
+      return `<button class="profile-option ${checked ? "selected" : ""} ${derived ? "derived" : ""} ${conflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${checked}" data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(profile.id)}" data-derived="${derived}" data-matched-rule="${escapeHTML(matchedRule)}" data-conflicted="${conflicted}" data-search="${escapeHTML(`${profile.id} ${profile.provider} ${profile.displayName}`.toLowerCase())}">
         <span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
-        <span class="profile-option-copy"><strong>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${derived ? `<small>由 ${escapeHTML(matchedRule)} 通配符匹配</small>` : conflicted ? `<small>已在${oppositeTitle}中启用</small>` : ""}</span>
+        <span class="profile-option-copy"><strong>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${derived ? `<small>${conflicted ? `点击将从${oppositeTitle}中移除冲突规则并取消此匹配` : `点击将取消${escapeHTML(matchedRule)}匹配`}</small>` : conflicted ? `<small>点击将从${oppositeTitle}中移除冲突规则</small>` : ""}</span>
         <span class="profile-badge">${escapeHTML(profile.kind === "oauth" ? "OAuth" : profile.provider || "API")}</span>
       </button>`;
     }).join("");
@@ -874,13 +874,64 @@
     if (!key) return;
     const currentList = editor.querySelector(`[data-profile-search="${kind}"]`)?.closest(".profile-panel")?.querySelector(".profile-list");
     state.pickerScroll = currentList?.scrollTop || 0;
-    const currentProfiles = new Set(key[kind]);
-    const oppositeProfiles = key[oppositeProfileKind(kind)];
-    const nextProfiles = normalizeProfiles(updater([...key[kind]])).filter((profile) =>
-      currentProfiles.has(profile) || !profileRulesConflict(profile, oppositeProfiles)
-    );
+    const nextProfiles = normalizeProfiles(updater([...key[kind]]));
     if (nextProfiles.length === key[kind].length && nextProfiles.every((profile, index) => profile === key[kind][index])) return;
     key[kind] = nextProfiles;
+    markDirty();
+    renderEditor();
+    if (state.openPicker === kind) restorePickerView(kind, true);
+  }
+
+  function removeConflictingRules(rules, profileID) {
+    return rules.filter((rule) => !profileRulesConflict(rule, [profileID]));
+  }
+
+  function expandWildcardForException(rules, excludedProfileID) {
+    const wildcardRules = rules.filter((rule) => rule.includes("*") || rule.includes("?"));
+    if (!wildcardRules.length) return rules;
+    const explicitRules = rules.filter((rule) => !rule.includes("*") && !rule.includes("?") && rule !== excludedProfileID);
+    const expanded = state.profiles
+      .filter((profile) => profile.id !== excludedProfileID && wildcardRules.some((rule) => profilePatternMatches(rule, profile.id)))
+      .map((profile) => profile.id);
+    return normalizeProfiles([...explicitRules, ...expanded]);
+  }
+
+  function toggleProfileRule(kind, profileID, derived = false) {
+    if (state.busy || !validProfileKind(kind)) return;
+    const key = selectedKey();
+    if (!key || !profileID) return;
+    const oppositeKind = oppositeProfileKind(kind);
+    const current = [...key[kind]];
+    const opposite = [...key[oppositeKind]];
+    const currentHasRule = current.includes(profileID);
+
+    if (currentHasRule) {
+      key[kind] = current.filter((rule) => rule !== profileID);
+    } else if (derived || current.some((rule) => (rule.includes("*") || rule.includes("?")) && profilePatternMatches(rule, profileID))) {
+      // Turn a wildcard selection into explicit current-catalog rules so one
+      // profile can be switched off without leaving the wildcard in place.
+      key[kind] = expandWildcardForException(current, profileID);
+      key[oppositeKind] = removeConflictingRules(opposite, profileID);
+    } else if (profileID === "*") {
+      key[kind] = ["*"];
+      key[oppositeKind] = [];
+    } else {
+      key[kind] = normalizeProfiles([...current, profileID]);
+      key[oppositeKind] = removeConflictingRules(opposite, profileID);
+    }
+    markDirty();
+    renderEditor();
+    if (state.openPicker === kind) restorePickerView(kind, true);
+  }
+
+  function selectAllProfiles(kind) {
+    if (state.busy || !validProfileKind(kind)) return;
+    const key = selectedKey();
+    if (!key) return;
+    const oppositeKind = oppositeProfileKind(kind);
+    const profileIDs = state.profiles.map((profile) => profile.id).filter(Boolean);
+    key[kind] = normalizeProfiles([...key[kind], ...profileIDs]);
+    key[oppositeKind] = key[oppositeKind].filter((rule) => !profileIDs.some((profileID) => profileRulesConflict(rule, [profileID])));
     markDirty();
     renderEditor();
     if (state.openPicker === kind) restorePickerView(kind, true);
@@ -1172,12 +1223,11 @@
       renderEditor();
       if (opening) restorePickerView(kind, true);
     } else if (action === "toggle-profile") {
-      if (target.dataset.locked === "true") return;
-      updateProfiles(kind, (profiles) => profiles.includes(target.dataset.profile) ? profiles.filter((profile) => profile !== target.dataset.profile) : [...profiles, target.dataset.profile]);
+      toggleProfileRule(kind, target.dataset.profile, target.dataset.derived === "true");
     } else if (action === "remove-profile") {
       updateProfiles(kind, (profiles) => profiles.filter((profile) => profile !== target.dataset.profile));
     } else if (action === "select-all-profiles") {
-      updateProfiles(kind, (profiles) => [...new Set([...profiles, ...state.profiles.map((profile) => profile.id)])]);
+      selectAllProfiles(kind);
     } else if (action === "clear-profiles") {
       updateProfiles(kind, () => []);
     } else if (action === "refresh-profiles") {

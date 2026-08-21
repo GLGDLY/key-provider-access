@@ -44,6 +44,8 @@ It reuses the same-origin CPAMC management session, reads downstream CPA keys to
 
 The panel identifies each downstream key with a masked head-and-tail display; the middle of the full key remains hidden. Full downstream keys are not persisted.
 
+Allow and deny profile choices are visually dimmed when they overlap, but remain clickable: choosing one removes the conflicting rule from the opposite side. Clicking an individual profile while `*` is active expands the wildcard into explicit current profiles with that profile excluded.
+
 On first use, the UI creates `plugins/key-provider-access/config.toml` and patches only this plugin's `policy_file` setting. Policy updates use revision ETags and atomic file replacement.
 
 ## Policy schema
