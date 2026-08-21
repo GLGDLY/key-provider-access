@@ -196,8 +196,6 @@
     ["搜索上游配置…", "Search providers…"],
     ["全选可用配置", "Select all available"],
     ["CPA 已保存插件配置，但等待策略文件生效超时。", "CPA saved the plugin configuration, but the policy file did not become effective before the timeout."],
-    ["已加载", "Loaded"],
-    ["个上游配置", " providers"],
     ["策略已保存，但", "The policy was saved, but "],
     ["CPA API Key 列表已变化；为避免策略错配，保存已中止。请刷新数据后重新检查规则。", "The CPA API key list changed; saving was stopped to avoid mismatched policies. Refresh the data and review the rules."],
     ["CPA 内置 API Keys", "CPA built-in API keys"],
