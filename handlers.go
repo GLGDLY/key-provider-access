@@ -134,7 +134,7 @@ func managementRegistration() managementRegistrationResponse {
 		},
 		Resources: []resourceRoute{{
 			Path:        "/settings",
-			Menu:        "上游配置权限",
+			Menu:        "Key Provider Access",
 			Description: "Manage per-key profile access policies in a browser.",
 		}},
 	}
