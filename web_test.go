@@ -68,6 +68,9 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"function maskCPAKey(value)",
 		"masked: maskCPAKey(normalizedValues[index])",
 		"class=\"mono masked-key\"",
+		"function profileRulesConflict(rule, oppositeRules)",
+		"mutually-excluded",
+		"currentProfiles.has(profile) || !profileRulesConflict(profile, oppositeProfiles)",
 		":root",
 	} {
 		if !strings.Contains(body, expected) {

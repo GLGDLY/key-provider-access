@@ -479,6 +479,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .profile-option:active { transform: scale(0.995); }
 .profile-option.selected { background: var(--surface-selected); }
 .profile-option.derived { cursor: default; opacity: 0.65; }
+.profile-option.mutually-excluded { cursor: not-allowed; opacity: 0.38; filter: saturate(0.2); }
+.profile-option.mutually-excluded:active { transform: none; }
+.profile-option.mutually-excluded .profile-checkbox { background: var(--surface-subtle); }
 .wildcard-option { margin-bottom: 0.2rem; border-bottom: 1px solid var(--border); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
 .profile-checkbox { width: 1rem; height: 1rem; display: inline-grid; flex: 0 0 auto; place-items: center; border: 1px solid var(--border-strong); border-radius: 0.28rem; background: var(--surface-raised); }
 .profile-checkbox svg { width: 0.7rem; height: 0.7rem; }
@@ -519,7 +522,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .button.secondary:not(:disabled):hover, .icon-button:hover { border-color: var(--border); background-color: var(--surface-subtle); }
   .nav-item:hover { color: var(--text); background: var(--surface-subtle); }
   .profile-trigger:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
-  .profile-option:hover { background: var(--surface-subtle); }
+  .profile-option:not(:disabled):hover { background: var(--surface-subtle); }
   .profile-panel-footer button:hover, .catalog-notice button:hover { color: var(--text); background: var(--surface-subtle); }
   .chip-remove:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 }

@@ -127,6 +127,22 @@
     return profilePatternMatches(pattern, profile.id);
   }
 
+  function oppositeProfileKind(kind) {
+    return kind === "allow_profiles" ? "deny_profiles" : "allow_profiles";
+  }
+
+  function profileRulesConflict(rule, oppositeRules) {
+    if (!rule || !oppositeRules.length) return false;
+    if (rule === "*" || oppositeRules.includes("*")) return true;
+    const wildcard = rule.includes("*") || rule.includes("?");
+    return oppositeRules.some((oppositeRule) => {
+      const oppositeWildcard = oppositeRule.includes("*") || oppositeRule.includes("?");
+      if (!wildcard) return profilePatternMatches(oppositeRule, rule);
+      if (!oppositeWildcard) return profilePatternMatches(rule, oppositeRule);
+      return state.profiles.some((profile) => profilePatternMatches(rule, profile.id) && profilePatternMatches(oppositeRule, profile.id));
+    });
+  }
+
   function normalizePolicyDocument(raw) {
     if (!raw || typeof raw !== "object" || raw.version !== 2 || !Array.isArray(raw.policies)) {
       throw new Error("插件返回了无效的 v2 策略文档。");
@@ -711,8 +727,11 @@
 
   function profilePicker(kind, title, description, selectedProfiles, deny) {
     const selected = new Set(selectedProfiles);
+    const oppositeProfiles = selectedKey()?.[oppositeProfileKind(kind)] || [];
+    const oppositeTitle = deny ? "允许上游配置" : "拒绝上游配置";
     const wildcardRules = selectedProfiles.filter((profile) => profile.includes("*") || profile.includes("?"));
     const wildcardSelected = selected.has("*");
+    const wildcardConflicted = !wildcardSelected && profileRulesConflict("*", oppositeProfiles);
     const matchedRuleFor = (profile) => wildcardRules.find((rule) => profileRuleMatches(rule, profile)) || "";
     const effectiveCatalogCount = state.profiles.filter((profile) => selected.has(profile.id) || matchedRuleFor(profile)).length;
     const isOpen = state.openPicker === kind;
@@ -728,9 +747,9 @@
           return `<span class="chip ${deny ? "deny" : ""}"><span>${escapeHTML(profile)}</span>${wildcard ? '<small>通配符</small>' : outsideCatalog ? '<small>目录外</small>' : ""}<button class="chip-remove" type="button" data-action="remove-profile" data-kind="${kind}" data-profile="${escapeHTML(profile)}" aria-label="移除此上游配置规则">${icons.close}</button></span>`;
         }).join("")
       : '<span class="empty-chips">尚未选择上游配置</span>';
-    const wildcardRow = `<button class="profile-option wildcard-option ${wildcardSelected ? "selected" : ""}" type="button" role="option" aria-selected="${wildcardSelected}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-search="全部上游配置 all profiles wildcard *">
+    const wildcardRow = `<button class="profile-option wildcard-option ${wildcardSelected ? "selected" : ""} ${wildcardConflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${wildcardSelected}" aria-disabled="${wildcardConflicted}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-locked="${wildcardConflicted}" data-search="全部上游配置 all profiles wildcard *" ${wildcardConflicted ? "disabled" : ""}>
       <span class="profile-checkbox" aria-hidden="true">${wildcardSelected ? icons.check : ""}</span>
-      <span class="profile-option-copy"><strong>全部上游配置</strong><small>${deny ? "* · 此 Key 将无法访问任何上游配置" : "* · 自动包含未来新增上游配置"}</small></span>
+      <span class="profile-option-copy"><strong>全部上游配置</strong><small>${wildcardConflicted ? `与${oppositeTitle}已有规则互斥，请先清空另一侧` : deny ? "* · 此 Key 将无法访问任何上游配置" : "* · 自动包含未来新增上游配置"}</small></span>
       <span class="profile-badge">通配符</span>
     </button>`;
     const commonWildcards = [];
@@ -738,10 +757,11 @@
       const explicit = selected.has(rule);
       const derived = wildcardSelected && !explicit;
       const checked = explicit || derived;
+      const conflicted = !checked && profileRulesConflict(rule, oppositeProfiles);
       const matchCount = state.profiles.filter((profile) => profileRuleMatches(rule, profile)).length;
-      return `<button class="profile-option preset-option ${checked ? "selected" : ""} ${derived ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived}" data-action="toggle-profile" data-kind="${kind}" data-profile="${rule}" data-locked="${derived}" data-search="${rule} 通配符 wildcard">
+      return `<button class="profile-option preset-option ${checked ? "selected" : ""} ${derived ? "derived" : ""} ${conflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived || conflicted}" data-action="toggle-profile" data-kind="${kind}" data-profile="${rule}" data-locked="${derived || conflicted}" data-search="${rule} 通配符 wildcard" ${conflicted ? "disabled" : ""}>
         <span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
-        <span class="profile-option-copy"><strong>${rule}</strong><small>当前匹配 ${matchCount} 个上游配置，并覆盖未来同前缀上游配置</small></span>
+        <span class="profile-option-copy"><strong>${rule}</strong><small>${conflicted ? `已被${oppositeTitle}占用` : `当前匹配 ${matchCount} 个上游配置，并覆盖未来同前缀上游配置`}</small></span>
         <span class="profile-badge">通配符</span>
       </button>`;
     }).join("");
@@ -750,9 +770,10 @@
       const matchedRule = explicit ? "" : matchedRuleFor(profile);
       const derived = Boolean(matchedRule);
       const checked = explicit || derived;
-      return `<button class="profile-option ${checked ? "selected" : ""} ${derived ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived}" data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(profile.id)}" data-locked="${derived}" data-search="${escapeHTML(`${profile.id} ${profile.provider} ${profile.displayName}`.toLowerCase())}">
+      const conflicted = !checked && profileRulesConflict(profile.id, oppositeProfiles);
+      return `<button class="profile-option ${checked ? "selected" : ""} ${derived ? "derived" : ""} ${conflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${checked}" aria-disabled="${derived || conflicted}" data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(profile.id)}" data-locked="${derived || conflicted}" data-search="${escapeHTML(`${profile.id} ${profile.provider} ${profile.displayName}`.toLowerCase())}" ${conflicted ? "disabled" : ""}>
         <span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
-        <span class="profile-option-copy"><strong>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${derived ? `<small>由 ${escapeHTML(matchedRule)} 通配符匹配</small>` : ""}</span>
+        <span class="profile-option-copy"><strong>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${derived ? `<small>由 ${escapeHTML(matchedRule)} 通配符匹配</small>` : conflicted ? `<small>已在${oppositeTitle}中启用</small>` : ""}</span>
         <span class="profile-badge">${escapeHTML(profile.kind === "oauth" ? "OAuth" : profile.provider || "API")}</span>
       </button>`;
     }).join("");
@@ -766,7 +787,7 @@
       ${isOpen ? `<div class="profile-panel">
         ${state.profiles.length ? `<div class="profile-search"><span>${icons.search}</span><input type="search" data-profile-search="${kind}" value="${escapeHTML(state.pickerQuery)}" autocomplete="off" placeholder="搜索上游配置…" aria-label="搜索${escapeHTML(title)}"></div>
         <div class="profile-list" role="listbox" aria-multiselectable="true">${wildcardRow}${presetRows}${rows}<p class="profile-empty" hidden>没有匹配的上游配置</p></div>
-        <div class="profile-panel-footer"><span>已匹配 ${effectiveCatalogCount} / ${state.profiles.length}</span><div><button type="button" data-action="select-all-profiles" data-kind="${kind}">全选当前目录</button><button type="button" data-action="clear-profiles" data-kind="${kind}">清空</button></div></div>`
+        <div class="profile-panel-footer"><span>已匹配 ${effectiveCatalogCount} / ${state.profiles.length}</span><div><button type="button" data-action="select-all-profiles" data-kind="${kind}">全选可用配置</button><button type="button" data-action="clear-profiles" data-kind="${kind}">清空</button></div></div>`
         : `<div class="profile-list compact" role="listbox" aria-multiselectable="true">${wildcardRow}</div><div class="catalog-notice"><span>${escapeHTML(state.profilesError || "没有可用上游配置目录。")}</span><button type="button" data-action="refresh-profiles">重新加载</button></div>`}
       </div>` : ""}
       <div class="chips">${chips}</div>
@@ -804,7 +825,11 @@
     if (!key) return;
     const currentList = editor.querySelector(`[data-profile-search="${kind}"]`)?.closest(".profile-panel")?.querySelector(".profile-list");
     state.pickerScroll = currentList?.scrollTop || 0;
-    const nextProfiles = normalizeProfiles(updater([...key[kind]]));
+    const currentProfiles = new Set(key[kind]);
+    const oppositeProfiles = key[oppositeProfileKind(kind)];
+    const nextProfiles = normalizeProfiles(updater([...key[kind]])).filter((profile) =>
+      currentProfiles.has(profile) || !profileRulesConflict(profile, oppositeProfiles)
+    );
     if (nextProfiles.length === key[kind].length && nextProfiles.every((profile, index) => profile === key[kind][index])) return;
     key[kind] = nextProfiles;
     markDirty();
