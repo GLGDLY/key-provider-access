@@ -25,6 +25,7 @@
   const PROFILE_CACHE_KEY = "key-provider-access-profile-cache-v1";
   const SUPPORTED_LANGUAGES = new Set(["en", "zh-CN", "zh-TW", "ru"]);
   const OBFUSCATION_PREFIX = "enc::v1::";
+  const OBFUSCATION_PREFIX_V2 = "enc::v2::";
   const OBFUSCATION_SALT = "cli-proxy-api-webui::secure-storage";
 
   const icons = {
@@ -338,16 +339,32 @@
     })[character]);
   }
 
-  // Mirrors CPAMC secureStorage v1. This is reversible obfuscation for session
-  // compatibility, not cryptography and not a new security boundary.
-  function decodeStoredValue(raw) {
-    if (!raw || !raw.startsWith(OBFUSCATION_PREFIX)) return raw;
-    const encoded = atob(raw.slice(OBFUSCATION_PREFIX.length));
+  // Mirrors CPAMC secureStorage. CPAMC v1 derives the obfuscation key from
+  // salt|host|userAgent; v2 (CPAMC 2026-09-17, PR #803) derives it from
+  // salt|v2|host so stored sessions survive browser upgrades. Both versions are
+  // readable here so the dashboard session keeps working across CPAMC upgrades.
+  // This is reversible obfuscation for session compatibility, not a security
+  // boundary.
+  function xorDecodeBase64(payload, keyMaterial) {
+    const encoded = atob(payload);
     const encrypted = Uint8Array.from(encoded, (character) => character.charCodeAt(0));
-    const key = new TextEncoder().encode(`${OBFUSCATION_SALT}|${window.location.host}|${navigator.userAgent}`);
+    const key = new TextEncoder().encode(keyMaterial);
     const decoded = new Uint8Array(encrypted.length);
     for (let index = 0; index < encrypted.length; index += 1) decoded[index] = encrypted[index] ^ key[index % key.length];
     return new TextDecoder().decode(decoded);
+  }
+
+  function decodeStoredValue(raw) {
+    if (!raw || typeof raw !== "string") return raw;
+    if (raw.startsWith(OBFUSCATION_PREFIX_V2)) {
+      try {
+        return xorDecodeBase64(raw.slice(OBFUSCATION_PREFIX_V2.length), `${OBFUSCATION_SALT}|v2|${window.location.host}`);
+      } catch (_) {
+        return raw;
+      }
+    }
+    if (!raw.startsWith(OBFUSCATION_PREFIX)) return raw;
+    return xorDecodeBase64(raw.slice(OBFUSCATION_PREFIX.length), `${OBFUSCATION_SALT}|${window.location.host}|${navigator.userAgent}`);
   }
 
   function readStoredValue(name) {
